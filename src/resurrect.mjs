@@ -33,8 +33,8 @@ export function context() {
   const option = (name, fallback = '') => tmux('show-option', '-gqv', name) || fallback;
   const expand = value => value.replace(/^~(?=\/|$)/, os.homedir())
     .replaceAll('$HOME', os.homedir()).replaceAll('$HOSTNAME', os.hostname());
-  const claudeDir = expand(option(PREFIX + 'claude-dir',
-    process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')));
+  const claudeConfigDir = expand(option(PREFIX + 'claude-dir', process.env.CLAUDE_CONFIG_DIR || ''));
+  const claudeDir = claudeConfigDir || path.join(os.homedir(), '.claude');
   const legacy = path.join(os.homedir(), '.tmux/resurrect');
   const resurrectDir = expand(option('@resurrect-dir', fs.existsSync(legacy) ? legacy
     : path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'tmux/resurrect')));
@@ -48,7 +48,7 @@ export function context() {
     const [session, window, pane, paneId, pid, command, cwd, inMode] = line.split('\t');
     return { session, window, pane, paneId, pid: Number(pid), command, cwd, inMode };
   });
-  return { tmux, option, expand, claudeDir, resurrectDir, stateDir, server, panes,
+  return { tmux, option, expand, claudeDir, claudeConfigDir, resurrectDir, stateDir, server, panes,
     processes, readArguments: readProcessArguments,
     now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) };
 }
@@ -246,11 +246,14 @@ async function preparePane(runtime, entry, pending, deadline) {
 
 function launchPane(runtime, entry, pane, { command, shell, claims }, result) {
   const target = { target: paneKey(entry), id: entry.id };
+  // Setting CLAUDE_CONFIG_DIR even to ~/.claude moves Claude's default ~/.claude.json.
+  const profile = runtime.claudeConfigDir ? ['-e', `CLAUDE_CONFIG_DIR=${runtime.claudeConfigDir}`] : [];
+  const resetProfile = runtime.claudeConfigDir ? '' : 'unset CLAUDE_CONFIG_DIR; ';
   // Keep the wrapper alive on Ctrl-C so it can open a login shell after Claude exits.
-  const wrapper = `trap ':' INT; "$@"; exec ${quote(shell)} -l`;
+  const wrapper = `${resetProfile}trap ':' INT; "$@"; exec ${quote(shell)} -l`;
   try {
     runtime.tmux('respawn-pane', '-k', '-t', pane.paneId, '-c', entry.cwd,
-      '-e', `CLAUDE_CONFIG_DIR=${runtime.claudeDir}`, '/bin/sh', '-c', wrapper,
+      ...profile, '/bin/sh', '-c', wrapper,
       'claude-resurrect', command, '--resume', entry.id, ...(entry.args || []));
   } catch (error) {
     // Continue after a pane failure only if the tmux server is still reachable.

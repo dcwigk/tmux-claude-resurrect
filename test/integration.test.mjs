@@ -2,12 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { quote } from '../src/resurrect.mjs';
 import { processes, readNativeSessions } from '../src/claude.mjs';
 import { decodeManifest } from '../src/snapshot.mjs';
 import { IDS, fixture, savedFixture, waitFor, events } from './helpers.mjs';
+
+test('profile selection distinguishes the default from explicit configuration', t => {
+  const f = fixture({ install: false });
+  t.after(f.clean);
+  f.start();
+  f.tmux('set-option', '-gu', '@claude-resurrect-claude-dir');
+  const env = { ...process.env, TMUX: f.tmux('display-message', '-p', '#{socket_path},#{pid},0') };
+  delete env.CLAUDE_CONFIG_DIR;
+  const module = new URL('../src/resurrect.mjs', import.meta.url).href;
+  const inspect = () => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+    `import {context} from ${JSON.stringify(module)}; const {claudeDir,claudeConfigDir}=context();`
+      + 'console.log(JSON.stringify({claudeDir,claudeConfigDir}));'], { env, encoding: 'utf8' }));
+  const defaultDir = path.join(os.homedir(), '.claude');
+  assert.deepEqual(inspect(), { claudeDir: defaultDir, claudeConfigDir: '' });
+  env.CLAUDE_CONFIG_DIR = path.join(f.root, 'environment-profile');
+  assert.deepEqual(inspect(), { claudeDir: env.CLAUDE_CONFIG_DIR, claudeConfigDir: env.CLAUDE_CONFIG_DIR });
+  f.tmux('set-option', '-g', '@claude-resurrect-claude-dir', f.claudeDir);
+  assert.deepEqual(inspect(), { claudeDir: f.claudeDir, claudeConfigDir: f.claudeDir });
+  f.tmux('set-option', '-g', '@claude-resurrect-claude-dir', '~/.claude');
+  assert.deepEqual(inspect(), { claudeDir: defaultDir, claudeConfigDir: defaultDir });
+});
 
 test('real Resurrect saves exact sessions, survives changed pane IDs, and reloads idempotently', async () => {
   const f = fixture();

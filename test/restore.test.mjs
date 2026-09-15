@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { beforeRestore, afterRestore, status, report, runHook } from '../src/resurrect.mjs';
 import { atomicJSON, readJSON } from '../src/files.mjs';
 import { IDS } from './helpers.mjs';
@@ -28,7 +29,7 @@ function fixture(t) {
   const calls = [], panes = [];
   let now = 100000, onSpawn = () => {}, onAnnotation = () => {};
   const runtime = {
-    claudeDir: root, resurrectDir, stateDir, server: 'isolated-test-server', expand: value => value,
+    claudeDir: root, claudeConfigDir: root, resurrectDir, stateDir, server: 'isolated-test-server', expand: value => value,
     processes: () => new Map(observed), now: () => now, sleep: async ms => { now += ms; },
     option: (key, fallback = '') => options.get(key) || fallback,
     panes: () => panes.map(pane => ({ ...pane })),
@@ -57,6 +58,25 @@ function fixture(t) {
     onSpawn: callback => { onSpawn = callback; }, onAnnotation: callback => { onAnnotation = callback; },
     restoreReport: () => status(runtime).reports.find(report => report.action === 'restore'),
   };
+}
+
+for (const custom of [false, true]) {
+  test(`restored Claude receives the ${custom ? 'explicit' : 'default'} profile environment`, async t => {
+    const f = fixture(t);
+    f.runtime.claudeConfigDir = custom ? path.join(f.root, "profile ' with spaces") : '';
+    const option = f.runtime.option;
+    f.runtime.option = (key, fallback) => key === 'default-shell' ? '/usr/bin/true' : option(key, fallback);
+    await afterRestore(f.runtime);
+    const launch = f.calls.find(call => call[0] === 'respawn-pane');
+    const shell = launch.indexOf('/bin/sh');
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: 'stale-pane-profile' };
+    if (launch.includes('-e')) env.CLAUDE_CONFIG_DIR = launch[launch.indexOf('-e') + 1].split('=').slice(1).join('=');
+    const output = execFileSync('/bin/sh', ['-c', launch[shell + 2], 'claude-resurrect',
+      process.execPath, '-p', 'JSON.stringify(process.env.CLAUDE_CONFIG_DIR ?? null)'], {
+      env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    });
+    assert.equal(JSON.parse(output), custom ? f.runtime.claudeConfigDir : null);
+  });
 }
 
 test('one failed pane launch does not prevent a later eligible pane from starting', async t => {

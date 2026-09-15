@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve Claude's default settings location on restore; only export `CLAUDE_CONFIG_DIR` for an explicitly configured profile.
 - Capture supported launch arguments per Claude session, including explicit permission flags, models, tool restrictions, and inline settings.
 - Read exact argument boundaries from Linux `/proc` or macOS `KERN_PROCARGS2`; macOS now requires Python 3.
 - Save version-2 manifests, retain version-1 compatibility, and skip sessions whose arguments cannot be captured reliably.
