@@ -34,13 +34,15 @@ The supported record is `<claude-dir>/sessions/<pid>.json`. Only these fields ar
 | Field | Validation/use |
 | --- | --- |
 | `pid` | Numeric and identical to the filename and a running process |
-| `procStart` | Matches `ps` process start time in the C locale and UTC; whitespace normalized |
+| `procStart` | Linux: decimal clock ticks matching `/proc/<pid>/stat` field 22 (string or safe integer). macOS: `ps` start time in the C locale and UTC, with whitespace normalized |
 | `sessionId` | Canonical UUID shape |
 | `kind` | Must be `interactive` to capture |
 | `entrypoint` | Must be `cli` to capture |
 | `cwd` | Absolute, nonempty path without control characters |
 
-Files are limited to 1 MiB. Malformed, stale, or unfamiliar identities are ignored. PID alone is insufficient because the operating system can reuse it. Start times from `ps` have second-level precision; this is an identity check within those limits, not a cryptographic identity.
+Files are limited to 1 MiB. Exited processes are ignored; malformed records and mismatched live identities produce diagnostics. PID alone is insufficient because the operating system can reuse it. Linux reads `stat` only for live registry candidates and locates field 22 after the final `)` because the process name may contain whitespace or parentheses. Clock ticks are compared as decimal strings without rounding. Unreadable or malformed `stat` records stop detection, preserving duplicate-launch protection.
+
+The process table still uses `ps` for ancestry and for the plugin's own lock, claim, and pane identities. Those checks, and native session matching on macOS, have second-level start-time precision. Linux native sessions use kernel clock-tick precision. These are process identity checks within those limits, not cryptographic identities.
 
 The process ancestry walk is cycle bounded. A wrapper shell between the pane process and Claude is supported. If Claude launches nested agents, the nearest eligible ancestor to the pane wins. Multiple equally near processes are ambiguous. One ID in multiple captured panes is also ambiguous. Verified IDs of any native session kind block duplicate launches, including a matching process outside tmux.
 

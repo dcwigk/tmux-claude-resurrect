@@ -32,7 +32,9 @@ import { execFileSync } from 'node:child_process';
 const root = ${JSON.stringify(root)};
 const id = process.argv[process.argv.indexOf('--resume') + 1];
 const start = execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } }).trim().replace(/\\s+/g, ' ');
-const publish = () => fs.writeFileSync(path.join(root, 'claude/sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, procStart: start, sessionId: id, cwd: process.cwd(), kind: 'interactive', entrypoint: 'cli' }));
+const stat = process.platform === 'linux' ? fs.readFileSync('/proc/' + process.pid + '/stat', 'utf8') : null;
+const procStart = stat === null ? start : stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\\s+/)[19];
+const publish = () => fs.writeFileSync(path.join(root, 'claude/sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, procStart, sessionId: id, cwd: process.cwd(), kind: 'interactive', entrypoint: 'cli' }));
 const gate = path.join(root, 'hold-registry');
 if (fs.existsSync(gate)) {
   const timer = setInterval(() => {

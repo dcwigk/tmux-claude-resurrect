@@ -20,7 +20,7 @@ The plugin reads Claude Code's native session registry, verifies each session ag
 - [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) and optionally [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum).
 - An authenticated Claude Code installation that writes compatible `sessions/<pid>.json` records and persists conversations under its `projects/` directory.
 
-Native registry detection has been checked with Claude Code **2.1.272 on macOS**. Automated integration tests use a synthetic Claude process and real tmux-resurrect on macOS and Linux; they do not establish compatibility with every Claude release. Older releases without this registry, SDK/background sessions, remote processes, and Windows are unsupported.
+Native registry detection has been checked with Claude Code **2.1.272 on macOS**. Linux records are verified against kernel start-time clock ticks in `/proc/<pid>/stat`; macOS records use `ps` start times. Automated integration tests use a synthetic Claude process that writes the platform's native timestamp format and real tmux-resurrect on macOS and Linux; they do not establish compatibility with every Claude release. Older releases without this registry, SDK/background sessions, remote processes, and Windows are unsupported.
 
 ## Install with TPM
 
@@ -72,6 +72,8 @@ Per-invocation environment variables and in-session option changes are not recon
 
 After upgrading from 0.1.0, save again to capture arguments. Older snapshots still restore using only `--resume <id>`.
 
+On Linux, versions through 0.2.0 did not recognize native clock-tick timestamps. After updating to 0.2.1 or newer, run `doctor` with Claude active and save again; earlier snapshots may contain no Claude mappings.
+
 ## Options
 
 All options are optional. Put them before TPM initialization.
@@ -83,7 +85,7 @@ All options are optional. Put them before TPM initialization.
 | `@claude-resurrect-claude-dir` | `CLAUDE_CONFIG_DIR`, otherwise `~/.claude` |
 | `@claude-resurrect-state-dir` | `$XDG_STATE_HOME/tmux/claude-resurrect`, otherwise `~/.local/state/tmux/claude-resurrect` |
 
-`command` and `node` accept one executable name or path, not a shell command with flags. Leave `claude-dir` unset for Claude's default profile: explicitly setting it, even to `~/.claude`, changes where Claude looks for its global settings. The plugin uses the existing `@resurrect-dir` setting. One Claude profile is supported per tmux server; all cooperating servers should share the same plugin state directory for launch coordination.
+`command` and `node` accept one executable name or path, not a shell command with flags. Both expand a leading `~/` to the current user's home directory. Leave `claude-dir` unset for Claude's default profile: explicitly setting it, even to `~/.claude`, changes where Claude looks for its global settings. The plugin uses the existing `@resurrect-dir` setting. One Claude profile is supported per tmux server; all cooperating servers should share the same plugin state directory for launch coordination.
 
 ```tmux
 set -g @claude-resurrect-command '~/.local/bin/claude'

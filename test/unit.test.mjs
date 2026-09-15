@@ -47,17 +47,17 @@ test('macOS and Linux process rows normalize start times and tolerate malformed 
 test('native registry rejects stale PIDs, mismatched filenames and unknown identities', t => {
   const f = fixture(t);
   f.write(f.record);
-  assert.equal(readNativeSessions(f.root, table()).sessions.length, 1);
+  assert.equal(readNativeSessions(f.root, table(), { platform: 'darwin' }).sessions.length, 1);
   for (const override of [{ pid: 43 }, { pid: '42' }, { procStart: 'yesterday' },
     { sessionId: 'latest' }, { sessionId: [IDS[0]] }, { procStart: null }, { pid: 99999 }]) {
     f.write({ ...f.record, ...override });
-    assert.deepEqual(readNativeSessions(f.root, table()).sessions, [], JSON.stringify(override));
+    assert.deepEqual(readNativeSessions(f.root, table(), { platform: 'darwin' }).sessions, [], JSON.stringify(override));
   }
   fs.writeFileSync(path.join(f.root, 'sessions/42.json'), '{');
   f.write(f.record, 'not-a-pid.json');
-  assert.deepEqual(readNativeSessions(f.root, table()).sessions, []);
+  assert.deepEqual(readNativeSessions(f.root, table(), { platform: 'darwin' }).sessions, []);
   fs.writeFileSync(path.join(f.root, 'sessions/42.json'), ' '.repeat(1024 * 1024 + 1));
-  assert.deepEqual(readNativeSessions(f.root, table()).sessions, []);
+  assert.deepEqual(readNativeSessions(f.root, table(), { platform: 'darwin' }).sessions, []);
 });
 
 function selectionFixture() {
@@ -124,7 +124,7 @@ test('manifest rejects malformed schemas, duplicate positions, duplicate IDs and
 test('argument capture retains failed mappings and detects conversation changes during the read', t => {
   const f = fixture(t);
   f.write(f.record);
-  const runtime = { ...f.c, processes: table,
+  const runtime = { ...f.c, processes: table, platform: 'darwin',
     readArguments: () => new Map([[42, { args: ['claude', '--dangerously-skip-permissions'] }]]) };
   const saved = capture(runtime, f.panes);
   assert.deepEqual(saved.entries[0].args, ['--dangerously-skip-permissions']);
@@ -236,11 +236,11 @@ test('JSON reads distinguish missing files, damaged content, and filesystem erro
 
 test('native registry distinguishes an empty directory, missing registry, and malformed records', t => {
   const f = fixture(t);
-  assert.deepEqual(readNativeSessions(f.root, table()), { sessions: [], warnings: [] });
+  assert.deepEqual(readNativeSessions(f.root, table(), { platform: 'darwin' }), { sessions: [], warnings: [] });
   fs.writeFileSync(path.join(f.root, 'sessions/42.json'), '{');
-  assert.equal(readNativeSessions(f.root, table()).warnings[0].code, 'INVALID_RECORD');
+  assert.equal(readNativeSessions(f.root, table(), { platform: 'darwin' }).warnings[0].code, 'INVALID_RECORD');
   fs.rmSync(path.join(f.root, 'sessions'), { recursive: true });
-  assert.equal(readNativeSessions(f.root, table()).warnings[0].code, 'REGISTRY_MISSING');
+  assert.equal(readNativeSessions(f.root, table(), { platform: 'darwin' }).warnings[0].code, 'REGISTRY_MISSING');
 });
 
 test('pane eligibility preserves existing processes and permits only idle replacements', () => {

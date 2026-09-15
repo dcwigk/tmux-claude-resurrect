@@ -48,7 +48,7 @@ export function context() {
     const [session, window, pane, paneId, pid, command, cwd, inMode] = line.split('\t');
     return { session, window, pane, paneId, pid: Number(pid), command, cwd, inMode };
   });
-  return { tmux, option, expand, claudeDir, claudeConfigDir, resurrectDir, stateDir, server, panes,
+  return { tmux, option, expand, claudeDir, claudeConfigDir, resurrectDir, stateDir, server, panes, platform: process.platform,
     processes, readArguments: readProcessArguments,
     now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) };
 }
@@ -97,7 +97,7 @@ export function report(runtime, action, value) {
  * @param {import('./claude.mjs').Pane[]} panes
  */
 export function capture(runtime, panes, table = runtime.processes()) {
-  const { sessions, warnings } = readNativeSessions(runtime.claudeDir, table);
+  const { sessions, warnings } = readNativeSessions(runtime.claudeDir, table, { platform: runtime.platform });
   const selection = selectSessions(panes, table, sessions);
   const unavailable = [];
   let argumentsByPid = new Map(), argumentsError;
@@ -108,7 +108,7 @@ export function capture(runtime, panes, table = runtime.processes()) {
   }
   // A process may exit or switch conversations while its arguments are being read.
   const current = selection.entries.length
-    ? readNativeSessions(runtime.claudeDir, runtime.processes()).sessions : [];
+    ? readNativeSessions(runtime.claudeDir, runtime.processes(), { platform: runtime.platform }).sessions : [];
   const entries = selection.entries.map(entry => {
     const { pid, procStart, ...saved } = entry;
     let args, argsError;
@@ -300,7 +300,7 @@ export async function afterRestore(runtime) {
       }
 
       // Registry and shared-state failures abort the whole pass; pane failures do not.
-      const registry = readNativeSessions(runtime.claudeDir, runtime.processes());
+      const registry = readNativeSessions(runtime.claudeDir, runtime.processes(), { platform: runtime.platform });
       if (launch.claims[entry.id] || registry.sessions.some(session => session.sessionId === entry.id)) {
         result.skipped.push({ ...target, code: 'SESSION_ACTIVE', reason: 'Session is already running or starting' });
         continue;

@@ -10,6 +10,23 @@ import { processes, readNativeSessions } from '../src/claude.mjs';
 import { decodeManifest } from '../src/snapshot.mjs';
 import { IDS, fixture, savedFixture, waitFor, events } from './helpers.mjs';
 
+test('Node launcher expands ~/ and preserves literal executable paths', t => {
+  const f = fixture({ install: false });
+  t.after(f.clean);
+  f.start();
+  const node = path.join(f.root, "node ' $(touch INJECTED_NODE)");
+  fs.symlinkSync(process.execPath, node);
+  const launcher = fileURLToPath(new URL('../bin/claude-resurrect', import.meta.url));
+  const env = { ...process.env, TMUX: f.tmux('display-message', '-p', '#{socket_path},#{pid},0'),
+    PATH: [path.dirname(process.execPath), process.env.PATH].join(path.delimiter) };
+  for (const configured of ['node', node, '~/' + path.relative(os.homedir(), node)]) {
+    f.tmux('set-option', '-g', '@claude-resurrect-node', configured);
+    const output = execFileSync(launcher, ['--version'], { env, cwd: f.root, encoding: 'utf8', timeout: 5000 });
+    assert.equal(output.trim(), JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
+  }
+  assert.equal(fs.existsSync(path.join(f.root, 'INJECTED_NODE')), false);
+});
+
 test('profile selection distinguishes the default from explicit configuration', t => {
   const f = fixture({ install: false });
   t.after(f.clean);
@@ -29,6 +46,34 @@ test('profile selection distinguishes the default from explicit configuration', 
   assert.deepEqual(inspect(), { claudeDir: f.claudeDir, claudeConfigDir: f.claudeDir });
   f.tmux('set-option', '-g', '@claude-resurrect-claude-dir', '~/.claude');
   assert.deepEqual(inspect(), { claudeDir: defaultDir, claudeConfigDir: defaultDir });
+});
+
+test('doctor validates the native platform timestamp and reports a live PID mismatch', async t => {
+  const f = fixture();
+  t.after(f.clean);
+  f.start();
+  f.run('work:0.0', IDS[0]);
+  await waitFor(() => events(f.root).length === 1);
+  const pid = events(f.root)[0].pid;
+  const file = path.join(f.claudeDir, 'sessions', `${pid}.json`);
+  const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (process.platform === 'linux') {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    assert.match(record.procStart, /^\d+$/);
+    assert.equal(record.procStart, stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[19]);
+  } else {
+    assert.equal(record.procStart, processes().get(pid).start);
+  }
+  const ready = JSON.parse(f.plugin('doctor'));
+  assert.equal(ready.liveNativeSessions, 1);
+  assert.equal(ready.captured, 1);
+  assert.deepEqual(ready.warnings, []);
+  record.procStart = process.platform === 'linux' ? (BigInt(record.procStart) + 1n).toString() : 'stale start time';
+  fs.writeFileSync(file, JSON.stringify(record));
+  const stale = JSON.parse(f.plugin('doctor'));
+  assert.equal(stale.liveNativeSessions, 0);
+  assert.equal(stale.captured, 0);
+  assert.ok(stale.warnings.some(warning => warning.includes('start time does not match')));
 });
 
 test('real Resurrect saves exact sessions, survives changed pane IDs, and reloads idempotently', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "tmux-claude-resurrect",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Resume exact Claude Code sessions after tmux-resurrect, using native session metadata.",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "test:unit": "node --test test/unit.test.mjs test/restore.test.mjs test/arguments.test.mjs",
+    "test:unit": "node --test test/unit.test.mjs test/restore.test.mjs test/arguments.test.mjs test/native.test.mjs",
     "test:integration": "node --test test/integration.test.mjs",
     "test:deps": "sh test/setup-deps.sh",
     "lint": "node test/lint.mjs"

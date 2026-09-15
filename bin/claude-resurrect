@@ -8,6 +8,9 @@ if [ -n "${TMUX:-}" ]; then
   configured_node=$(tmux -S "$socket" show-option -gqv @claude-resurrect-node 2>/dev/null || :)
   if [ -n "$configured_node" ]; then node_command=$configured_node; fi
 fi
+case "$node_command" in
+  \~/*) node_command="$HOME/${node_command#\~/}" ;;
+esac
 if ! command -v "$node_command" >/dev/null 2>&1; then
   printf '%s\n' 'Claude restore: Node.js 22+ is required in the tmux PATH (or set @claude-resurrect-node).' >&2
   exit 1

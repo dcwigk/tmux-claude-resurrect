@@ -45,8 +45,25 @@ export function distance(pid, ancestor, table) {
   return Infinity;
 }
 
+function linuxProcessStart(pid, procRoot) {
+  const file = path.join(procRoot, String(pid), 'stat');
+  try {
+    const stat = fs.readFileSync(file, 'utf8');
+    // comm may contain spaces, parentheses, or newlines; field 3 follows its final ')'.
+    const open = stat.indexOf('('), close = stat.lastIndexOf(')');
+    const ticks = stat.slice(close + 1).trim().split(/\s+/)[19];
+    if (open < 0 || close <= open || stat.slice(0, open).trim() !== String(pid) || !/^\d+$/.test(ticks ?? '')) {
+      throw new Error('Malformed /proc stat record');
+    }
+    return ticks;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return null;
+    throw new Error(`Cannot verify Linux process start time: ${file}: ${error.message}`);
+  }
+}
+
 // Claude's native registry is internal. Unknown records must not become guesses.
-export function readNativeSessions(root, table) {
+export function readNativeSessions(root, table, { platform = process.platform, procRoot = '/proc' } = {}) {
   const directory = path.join(root, 'sessions');
   const sessions = [], warnings = [];
   if (!directoryExists(directory)) {
@@ -64,12 +81,26 @@ export function readNativeSessions(root, table) {
     }
     const record = result.value;
     const processInfo = table.get(record?.pid);
-    if (!record || record.pid !== Number(name.slice(0, -5)) || !isUUID(record.sessionId) || !isText(record.procStart)) {
+    if (!record || record.pid !== Number(name.slice(0, -5)) || !isUUID(record.sessionId)) {
       warnings.push({ code: 'INVALID_RECORD', file, reason: 'Unsupported native session identity' });
       continue;
     }
-    if (!processInfo || normalizeStart(record.procStart) !== processInfo.start) continue;
-    sessions.push({ pid: record.pid, procStart: processInfo.start, sessionId: record.sessionId.toLowerCase(),
+    const validStart = platform === 'linux'
+      ? isText(record.procStart) && /^\d+$/.test(record.procStart)
+        || Number.isSafeInteger(record.procStart) && record.procStart >= 0
+      : isText(record.procStart);
+    if (!validStart) {
+      warnings.push({ code: 'INVALID_RECORD', file, reason: `Unsupported native process start time for ${platform}` });
+      continue;
+    }
+    if (!processInfo) continue;
+    const start = platform === 'linux' ? linuxProcessStart(record.pid, procRoot) : processInfo.start;
+    if (start === null) continue;
+    if (normalizeStart(record.procStart) !== start) {
+      warnings.push({ code: 'PROCESS_START_MISMATCH', file, reason: 'Native process start time does not match the live PID' });
+      continue;
+    }
+    sessions.push({ pid: record.pid, procStart: start, sessionId: record.sessionId.toLowerCase(),
       cwd: record.cwd, kind: record.kind, entrypoint: record.entrypoint });
   }
   return { sessions, warnings };

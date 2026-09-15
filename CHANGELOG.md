@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 — 2026-09-15
+
+- Fix Linux session detection by comparing native `procStart` clock ticks with field 22 of `/proc/<pid>/stat`; keep macOS `ps` start-time matching.
+- Parse Linux process names containing whitespace or parentheses without shifting the start-time field. Report mismatched live identities and stop detection on unreadable process metadata.
+- Make the synthetic Claude process write the native timestamp format for its platform, covering Linux detection and save/restore with real kernel start times.
+- Expand leading `~/` in `@claude-resurrect-node` without evaluating shell syntax.
+
+On Linux, update the plugin, check `doctor`, and save again while Claude is running. Snapshots made before this fix may contain no Claude mappings.
+
 ## 0.2.0 — 2026-09-15
 
 - Capture supported launch arguments per Claude session, including explicit permission flags, models, tool restrictions, and inline settings.
