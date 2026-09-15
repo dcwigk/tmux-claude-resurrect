@@ -6,4 +6,6 @@ for (const directory of ['src', 'test']) {
     execFileSync(process.execPath, ['--check', `${directory}/${file}`], { stdio: 'inherit' });
   }
 }
-execFileSync('shellcheck', ['claude-resurrect.tmux', 'bin/claude-resurrect', 'test/setup-deps.sh'], { stdio: 'inherit' });
+execFileSync('shellcheck', [
+  'claude-resurrect.tmux', 'bin/claude-resurrect', 'test/setup-deps.sh', '.githooks/pre-commit',
+], { stdio: 'inherit' });
