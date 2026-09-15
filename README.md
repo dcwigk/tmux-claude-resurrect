@@ -4,7 +4,7 @@ Resume the **exact Claude Code conversation in each restored tmux pane**.
 
 ![Two Claude conversations in the same project are saved, survive a tmux server restart, and return to their original panes with their launch options.](docs/assets/restore.gif)
 
-Real tmux save/restore with synthetic Claude conversations. [Reproduce the demo](demo/README.md).
+Two real Claude Code conversations: start, save, detach, stop the demo server, and restore. [Reproduce the demo](demo/README.md).
 
 The plugin reads Claude Code's native session registry, verifies each session against a running process, and saves the mapping and supported launch arguments alongside the tmux-resurrect layout. On restore, it launches `claude --resume <session-id>` with those arguments in the corresponding pane and working directory.
 
@@ -83,7 +83,7 @@ All options are optional. Put them before TPM initialization.
 | `@claude-resurrect-claude-dir` | `CLAUDE_CONFIG_DIR`, otherwise `~/.claude` |
 | `@claude-resurrect-state-dir` | `$XDG_STATE_HOME/tmux/claude-resurrect`, otherwise `~/.local/state/tmux/claude-resurrect` |
 
-`command` and `node` accept one executable name or path, not a shell command with flags. The plugin uses the existing `@resurrect-dir` setting. One Claude profile is supported per tmux server; all cooperating servers should share the same plugin state directory for launch coordination.
+`command` and `node` accept one executable name or path, not a shell command with flags. Leave `claude-dir` unset for Claude's default profile: explicitly setting it, even to `~/.claude`, changes where Claude looks for its global settings. The plugin uses the existing `@resurrect-dir` setting. One Claude profile is supported per tmux server; all cooperating servers should share the same plugin state directory for launch coordination.
 
 ```tmux
 set -g @claude-resurrect-command '~/.local/bin/claude'
