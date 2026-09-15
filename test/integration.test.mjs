@@ -95,6 +95,7 @@ test('real save and restore preserve different arguments per session without rep
   f.save();
   const manifest = decodeManifest(fs.readFileSync(f.last(), 'utf8'));
   assert.equal(manifest.version, 2);
+  const savedAt = Date.now();
   assert.deepEqual(manifest.entries.map(entry => entry.args), [first, second]);
   assert.equal(JSON.stringify(manifest).includes('one-shot prompt'), false);
   f.stop(); f.start('keep'); f.restore();
@@ -102,6 +103,8 @@ test('real save and restore preserve different arguments per session without rep
   const resumed = events(f.root).slice(2).sort((a, b) => a.id.localeCompare(b.id));
   assert.deepEqual(resumed.map(entry => entry.args), [first, second].map((args, i) => ['--resume', IDS[i], ...args]));
   assert.equal(fs.existsSync(path.join(f.cwd, 'INJECTED_ARGS')), false);
+  // Upstream reuses and can delete the same snapshot filename when saves share a second.
+  await waitFor(() => Date.now() - savedAt >= 1000);
   f.save();
   assert.deepEqual(decodeManifest(fs.readFileSync(f.last(), 'utf8')).entries.map(entry => entry.args), [first, second]);
 });
