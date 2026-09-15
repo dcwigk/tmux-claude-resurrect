@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { parseProcesses, distance, liveRegistry, decodeManifest, quote, capture,
-  transcriptValid, transcriptFor, snapshot, atomicJSON, acquireLock, unlock, processes, idle } from '../src/resurrect.mjs';
+import { parseProcesses, distance, readNativeSessions, selectSessions, transcriptValid, transcriptFor, idle, processes } from '../src/claude.mjs';
+import { decodeManifest, readSnapshot } from '../src/snapshot.mjs';
+import { atomicJSON, readJSON } from '../src/files.mjs';
+import { quote, acquireLock, unlock, paneSkipReason, activeClaims } from '../src/resurrect.mjs';
 
 const IDS = [1, 2].map(n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`);
 const START = 'Mon Sep 14 06:25:00 2026';
@@ -25,10 +27,9 @@ function fixture(t) {
   const record = { pid: 42, procStart: START, sessionId: IDS[0], cwd: root, kind: 'interactive', entrypoint: 'cli' };
   const write = (value, filename = '42.json') => fs.writeFileSync(path.join(root, 'sessions', filename), JSON.stringify(value));
   const panes = [{ session: 'work', window: '0', pane: '0', paneId: '%0', pid: 21, command: 'zsh', inMode: '0' }];
-  const c = { claudeDir: root, stateDir: path.join(root, 'state'), panes: () => panes };
+  const c = { claudeDir: root, stateDir: path.join(root, 'state'), panes: () => panes, processes, now: Date.now };
   return { root, project, transcript, record, write, c, panes };
 }
-const row = 'pane\twork\t0\t1\t*\t0\t:\t:/example\t1\tclaude\t:claude\n';
 const manifest = entries => 'claude-resurrect\t' + JSON.stringify({ version: 1, entries });
 
 test('macOS and Linux process rows normalize start times and tolerate malformed lines', () => {
@@ -45,67 +46,65 @@ test('macOS and Linux process rows normalize start times and tolerate malformed 
 test('native registry rejects stale PIDs, mismatched filenames and unknown identities', t => {
   const f = fixture(t);
   f.write(f.record);
-  assert.equal(liveRegistry(f.root, table()).length, 1);
+  assert.equal(readNativeSessions(f.root, table()).sessions.length, 1);
   for (const override of [{ pid: 43 }, { pid: '42' }, { procStart: 'yesterday' },
     { sessionId: 'latest' }, { sessionId: [IDS[0]] }, { procStart: null }, { pid: 99999 }]) {
     f.write({ ...f.record, ...override });
-    assert.deepEqual(liveRegistry(f.root, table()), [], JSON.stringify(override));
+    assert.deepEqual(readNativeSessions(f.root, table()).sessions, [], JSON.stringify(override));
   }
   fs.writeFileSync(path.join(f.root, 'sessions/42.json'), '{');
   f.write(f.record, 'not-a-pid.json');
-  assert.deepEqual(liveRegistry(f.root, table()), []);
+  assert.deepEqual(readNativeSessions(f.root, table()).sessions, []);
   fs.writeFileSync(path.join(f.root, 'sessions/42.json'), ' '.repeat(1024 * 1024 + 1));
-  assert.deepEqual(liveRegistry(f.root, table()), []);
+  assert.deepEqual(readNativeSessions(f.root, table()).sessions, []);
 });
 
-test('capture excludes SDK sessions and keeps the outer interactive session', t => {
-  const f = fixture(t);
-  f.write(f.record);
-  f.write({ ...f.record, pid: 43, sessionId: IDS[1] }, '43.json');
-  assert.deepEqual(capture(f.c, row, table()).manifest.entries.map(e => e.id), [IDS[0]]);
-  fs.unlinkSync(path.join(f.root, 'sessions/43.json'));
+function selectionFixture() {
+  const panes = [{ session: 'work', window: '0', pane: '0', paneId: '%0', pid: 21, command: 'zsh', inMode: '0' }];
+  const record = { pid: 42, procStart: START, sessionId: IDS[0], cwd: '/example', kind: 'interactive', entrypoint: 'cli' };
+  return { panes, record, table: table() };
+}
+
+test('selection excludes SDK sessions and keeps the outer interactive session without filesystem access', () => {
+  const f = selectionFixture();
+  assert.deepEqual(selectSessions(f.panes, f.table, [f.record, { ...f.record, pid: 43, sessionId: IDS[1] }]).entries.map(entry => entry.id), [IDS[0]]);
   for (const override of [{ kind: 'sdk' }, { entrypoint: 'sdk' }, { kind: undefined }, { cwd: 'relative' }]) {
-    f.write({ ...f.record, ...override });
-    assert.equal(capture(f.c, row, table()).manifest.entries.length, 0);
+    assert.equal(selectSessions(f.panes, f.table, [{ ...f.record, ...override }]).entries.length, 0);
   }
 });
 
-test('capture fails closed for equally near sessions and duplicate IDs in distinct panes', t => {
-  const f = fixture(t);
-  f.write(f.record);
-  f.write({ ...f.record, pid: 44, sessionId: IDS[1] }, '44.json');
-  assert.equal(capture(f.c, row, table()).skipped[0].reason, 'Ambiguous sessions');
+test('selection rejects equally near sessions and duplicate IDs in distinct panes', () => {
+  const f = selectionFixture();
+  assert.equal(selectSessions(f.panes, f.table, [f.record, { ...f.record, pid: 44, sessionId: IDS[1] }]).skipped[0].code, 'AMBIGUOUS_SESSION');
   f.panes.push({ ...f.panes[0], pane: '1', paneId: '%1', pid: 44 });
-  const processes = table();
-  processes.get(44).ppid = 10;
-  f.write({ ...f.record, pid: 44 }, '44.json');
-  const result = capture(f.c, row + row.replace('\t*\t0\t', '\t*\t1\t'), processes);
-  assert.equal(result.manifest.entries.length, 0);
+  f.table.get(44).ppid = 10;
+  const result = selectSessions(f.panes, f.table, [f.record, { ...f.record, pid: 44 }]);
+  assert.equal(result.entries.length, 0);
   assert.equal(result.skipped.length, 2);
 });
 
-test('no native record means no guessed ID even when a transcript is available', t => {
-  const f = fixture(t);
-  const result = capture(f.c, row, table());
-  assert.deepEqual(result.manifest.entries, []);
-  assert.match(result.skipped[0].reason, /native session record/);
+test('no verified native record means no guessed session', () => {
+  const f = selectionFixture();
+  const result = selectSessions(f.panes, f.table, []);
+  assert.deepEqual(result.entries, []);
+  assert.equal(result.skipped[0].code, 'NO_NATIVE_SESSION');
 });
 
 test('transcripts require a unique, nonempty file contained in the selected Claude profile', t => {
   const f = fixture(t);
-  assert.equal(transcriptValid(f.c, f.transcript, IDS[0]), true);
-  assert.equal(transcriptFor(f.c, IDS[0], '/unrelated'), fs.realpathSync(f.transcript));
+  assert.equal(transcriptValid(f.root, f.transcript, IDS[0]), true);
+  assert.equal(transcriptFor(f.root, IDS[0], '/unrelated'), fs.realpathSync(f.transcript));
   const other = path.join(f.root, 'projects', 'other');
   fs.mkdirSync(other);
   fs.copyFileSync(f.transcript, path.join(other, IDS[0] + '.jsonl'));
-  assert.equal(transcriptFor(f.c, IDS[0], '/unrelated'), null);
+  assert.equal(transcriptFor(f.root, IDS[0], '/unrelated'), null);
   fs.writeFileSync(f.transcript, '');
-  assert.equal(transcriptValid(f.c, f.transcript, IDS[0]), false);
+  assert.equal(transcriptValid(f.root, f.transcript, IDS[0]), false);
   const outside = path.join(f.root, IDS[0] + '.jsonl');
   fs.writeFileSync(outside, '{}\n');
   fs.unlinkSync(f.transcript);
   fs.symlinkSync(outside, f.transcript);
-  assert.equal(transcriptValid(f.c, f.transcript, IDS[0]), false);
+  assert.equal(transcriptValid(f.root, f.transcript, IDS[0]), false);
 });
 
 test('manifest rejects malformed schemas, duplicate positions, duplicate IDs and control characters', t => {
@@ -129,14 +128,14 @@ test('snapshot selection refuses external paths and oversized files', t => {
   fs.writeFileSync(file, manifest([]));
   fs.symlinkSync(file, path.join(dir, 'last'));
   const c = { resurrectDir: dir };
-  assert.equal(snapshot(c).manifest.entries.length, 0);
+  assert.equal(readSnapshot(c.resurrectDir).manifest.entries.length, 0);
   fs.unlinkSync(path.join(dir, 'last'));
   fs.symlinkSync(f.transcript, path.join(dir, 'last'));
-  assert.throws(() => snapshot(c), /outside/);
+  assert.throws(() => readSnapshot(c.resurrectDir), /outside/);
   fs.unlinkSync(path.join(dir, 'last'));
   fs.symlinkSync(file, path.join(dir, 'last'));
   fs.truncateSync(file, 16 * 1024 * 1024 + 1);
-  assert.throws(() => snapshot(c), /size limit/);
+  assert.throws(() => readSnapshot(c.resurrectDir), /size limit/);
 });
 
 test('shell quoting preserves literal filenames without evaluating their contents', t => {
@@ -158,29 +157,75 @@ test('state is written atomically with private permissions and no leftover tempo
 
 test('restore locks reject concurrent owners and require explicit stale recovery', t => {
   const f = fixture(t);
-  const release = acquireLock(f.c);
+  const lock = acquireLock(f.c);
   assert.throws(() => acquireLock(f.c), /lock exists/);
   assert.throws(() => unlock(f.c), /still running/);
-  release();
+  lock.release();
   const file = path.join(f.c.stateDir, 'restore.lock');
   atomicJSON(file, { pid: process.pid, start: 'stale process identity' });
   assert.throws(() => unlock(f.c), /too recent/);
   fs.utimesSync(file, 1, 1);
   unlock(f.c);
   assert.equal(fs.existsSync(file), false);
-  const releaseOld = acquireLock(f.c);
+  const oldLock = acquireLock(f.c);
   atomicJSON(file, { token: 'replacement' });
-  releaseOld();
+  oldLock.release();
   assert.equal(fs.existsSync(file), true, 'release cannot remove another owner’s lock');
 });
 
 test('only shells without descendants or copy mode qualify as idle', () => {
-  const proc = processes().get(process.pid);
-  const map = new Map([[21, { ...proc, pid: 21, ppid: 1 }]]);
+  const map = new Map([[21, { pid: 21, ppid: 1, start: START }]]);
   const pane = { pid: 21, command: 'sh', inMode: '0' };
   assert.equal(idle(pane, map), true);
   assert.equal(idle({ ...pane, command: 'claude' }, map), false);
   assert.equal(idle({ ...pane, inMode: '1' }, map), false);
   map.set(22, { pid: 22, ppid: 21 });
   assert.equal(idle(pane, map), false);
+});
+
+test('JSON reads distinguish missing files, damaged content, and filesystem errors', t => {
+  const f = fixture(t);
+  const file = path.join(f.root, 'state.json');
+  assert.equal(readJSON(file).status, 'missing');
+  fs.writeFileSync(file, '{');
+  assert.equal(readJSON(file).status, 'invalid');
+  assert.equal(readJSON(path.join(file, 'child')).status, 'unreadable');
+  fs.writeFileSync(file, 'null');
+  assert.deepEqual(readJSON(file), { status: 'ok', value: null });
+});
+
+test('native registry distinguishes an empty directory, missing registry, and malformed records', t => {
+  const f = fixture(t);
+  assert.deepEqual(readNativeSessions(f.root, table()), { sessions: [], warnings: [] });
+  fs.writeFileSync(path.join(f.root, 'sessions/42.json'), '{');
+  assert.equal(readNativeSessions(f.root, table()).warnings[0].code, 'INVALID_RECORD');
+  fs.rmSync(path.join(f.root, 'sessions'), { recursive: true });
+  assert.equal(readNativeSessions(f.root, table()).warnings[0].code, 'REGISTRY_MISSING');
+});
+
+test('pane eligibility preserves existing processes and permits only idle replacements', () => {
+  const pane = { paneId: '%1', pid: 21, command: 'sh', inMode: '0' };
+  const original = { paneId: '%1', pid: 21, start: START, idle: true };
+  const observed = new Map([[21, { pid: 21, ppid: 1, start: START }]]);
+  assert.equal(paneSkipReason(undefined, undefined, observed).code, 'PANE_MISSING');
+  assert.equal(paneSkipReason(pane, original, observed).code, 'PANE_EXISTED');
+  assert.equal(paneSkipReason(pane, undefined, observed), null);
+  assert.equal(paneSkipReason({ ...pane, inMode: '1' }, undefined, observed).code, 'PANE_BUSY');
+  observed.get(21).start = 'Tue Sep 15 06:25:00 2026';
+  assert.equal(paneSkipReason(pane, original, observed), null, 'a changed process identity can qualify');
+  assert.equal(paneSkipReason(pane, { ...original, idle: false }, observed).code, 'PANE_EXISTED');
+  observed.set(22, { pid: 22, ppid: 21 });
+  assert.equal(paneSkipReason(pane, undefined, observed).code, 'PANE_BUSY');
+});
+
+test('launch claims require valid metadata and expire using supplied observations and time', () => {
+  const claim = { pid: 21, start: START, time: 100000, paneId: '%1', server: 'test' };
+  const observed = new Map([[21, { pid: 21, start: START }]]);
+  assert.ok(activeClaims({ [IDS[0]]: claim }, observed, 110000)[IDS[0]]);
+  assert.ok(activeClaims({ [IDS[0]]: claim }, observed, 90000)[IDS[0]], 'a clock rollback does not remove startup protection');
+  assert.deepEqual(activeClaims({ [IDS[0]]: claim }, observed, 170000), {});
+  observed.get(21).start = 'reused PID';
+  assert.deepEqual(activeClaims({ [IDS[0]]: claim }, observed, 110000), {});
+  assert.throws(() => activeClaims([], observed, 110000), /Invalid launch claims/);
+  assert.throws(() => activeClaims({ [IDS[0]]: { time: 100000 } }, observed, 110000), /Invalid launch claim/);
 });

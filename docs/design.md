@@ -13,6 +13,18 @@ flowchart LR
 
 The plugin is event driven. It does no work while a user is simply typing in tmux. Installation connects three existing Resurrect extension points: `post-save-layout`, `pre-restore-all`, and `post-restore-all`. These are tmux-resurrect hooks; Claude hooks are not used.
 
+## Module boundaries
+
+- `cli.mjs` handles arguments and output. The version comes from `package.json`.
+- `claude.mjs` owns native records, process ancestry, session selection, and transcript paths.
+- `snapshot.mjs` owns Resurrect row positions and the versioned manifest format.
+- `resurrect.mjs` coordinates tmux, save/restore, shared state, and diagnostics.
+- `files.mjs` provides bounded reads, explicit JSON read outcomes, and atomic writes shared by the other modules.
+
+Session selection receives pane, process, and registry observations as data. It does not parse snapshots or perform I/O. Both save and doctor use the same selection path. Pane eligibility and claim expiry are also pure decisions; the restore runtime supplies process observations, time, and waits so their callers can be tested deterministically.
+
+Missing JSON files, invalid content, and filesystem read failures are separate outcomes. Optional reports can be unavailable without aborting restoration; errors writing reports are emitted to stderr. Shared launch claims remain critical state: unreadable or malformed claims abort the launch pass instead of silently removing duplicate-launch protection.
+
 ## Native registry contract
 
 The supported record is `<claude-dir>/sessions/<pid>.json`. Only these fields are retained in memory:
@@ -52,7 +64,9 @@ Snapshots and reports contain local paths and session IDs. Treat the Resurrect d
 4. For each entry, locate the logical pane. Existing panes are excluded unless upstream demonstrably replaced an originally idle process. Validate the working directory and transcript again.
 5. Wait at most four seconds total for new shells to settle. A candidate must be a recognized shell, outside copy mode, with no child processes. Check live native IDs and startup claims.
 6. Recheck pane identity and idleness immediately before `respawn-pane`. Launch an argument-quoted command with only `--resume <UUID>`, set the selected Claude profile, and retain a shell after Claude exits.
-7. Record a launch claim containing PID/start identity and write the diagnostic report. Release only a lock still owned by this invocation.
+7. Record a launch claim containing PID/start identity and write the diagnostic report, including partial progress after an error. Release only a lock still owned by this invocation.
+
+A failed individual pane launch is recorded and does not prevent subsequent eligible panes from starting. Snapshot-integrity errors, registry read failures, lost lock ownership, and claim read/write failures abort the pass. Lock ownership is checked again immediately before each launch.
 
 The four-second wait is a shared budget, not four seconds per pane. Process and tmux queries have timeouts. There is no `send-keys` injection, shell-history replay, or permission-bypass flag.
 
@@ -70,7 +84,7 @@ No Claude settings, terminal colors, pane titles, or key bindings are changed. T
 
 ## Verification scope
 
-Unit tests cover process identity, ancestry ambiguity, internal record/schema rejection, transcript containment, metadata bounds, literal path quoting, atomic state writes, and restore-lock ownership/recovery.
+Unit tests exercise session selection, pane eligibility, and claim expiry using supplied observations. Restore failure tests simulate individual pane errors, shared-state write failures, and lock loss without starting tmux. Other unit tests cover process identity, ancestry ambiguity, internal record/schema rejection, transcript containment, metadata bounds, literal path quoting, atomic state writes, and restore-lock ownership/recovery.
 
 Integration tests run the pinned upstream Resurrect save/restore scripts against isolated real tmux servers. Synthetic processes publish the minimum native registry fields and record their launch arguments. Scenarios include changed pane IDs, multiple sessions in one project, repeated restore, bootstrap replacement, busy-pane protection, missing files, malformed or changed snapshots, an already-running session outside tmux, prior-hook failures, uninstall, and plugin/executable paths with quotes and spaces.
 

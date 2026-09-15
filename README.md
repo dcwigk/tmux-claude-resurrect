@@ -38,7 +38,7 @@ Inside tmux, check detection while Claude is running in another pane:
 ~/.tmux/plugins/tmux-claude-resurrect/bin/claude-resurrect doctor
 ```
 
-`captured` is the number of unambiguously mapped sessions. Review `unavailable`, `skipped`, and `warnings`. The default TPM directory is shown here; adjust these commands if you use a custom plugin directory.
+`captured` is the number of unambiguously mapped sessions, or `null` if detection could not complete. Review `unavailable`, `skipped`, and `warnings`. The default TPM directory is shown here; adjust these commands if you use a custom plugin directory.
 
 Save with tmux-resurrect's `prefix` + `Ctrl-s`. After restarting tmux, restore with `prefix` + `Ctrl-r`. Continuum uses the same save/restore integration.
 
@@ -84,12 +84,14 @@ set -g @claude-resurrect-node '/opt/homebrew/bin/node'
 ~/.tmux/plugins/tmux-claude-resurrect/bin/claude-resurrect status
 ```
 
-`status` shows the selected snapshot's mappings and recent save/restore reports as JSON. A reported launch means tmux started the resume command; inspect the pane for authentication errors or errors from Claude itself.
+`status` shows the selected snapshot's mappings and recent save/restore reports for the current tmux server as JSON. If the snapshot is missing or damaged, `snapshotError` explains the problem and existing reports remain visible. A reported launch means tmux started the resume command; inspect the pane for authentication errors or errors from Claude itself.
 
 - **No compatible live native session record:** Claude did not provide an identity that matches a live PID and process start time. Check the selected Claude profile and version. No transcript guessing is used.
 - **Ambiguous sessions:** multiple eligible processes map to one pane, or the same session ID maps to distinct panes. Split the sessions before saving.
 - **Session already running or starting:** a native record or a short-lived launch claim prevents a duplicate. Claims expire after 60 seconds, or earlier when their process exits.
 - **Missing directory or transcript:** restore the local project/conversation files first. Snapshots contain metadata, not those files.
+- **Cannot read launch claims:** shared startup state is unreadable or malformed. The launch pass stops; inspect the file indicated by `doctor` before repairing it. It is not discarded automatically.
+- **Launch failed:** that pane receives a failure record; other eligible panes can still launch.
 - **Snapshot changed during restore:** select the desired snapshot and repeat the restore.
 - **Restore lock exists:** another restore is running, or one was interrupted. After its owner exits and the lock is at least 30 seconds old, run `bin/claude-resurrect unlock` from the plugin directory. Never remove a live owner's lock.
 

@@ -4,70 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { quote, parseProcesses, distance, liveRegistry, decodeManifest, processes } from '../src/resurrect.mjs';
-
-const SCRIPT = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
-const NODE = fs.realpathSync(process.execPath);
-const RESURRECT = fileURLToPath(new URL('../.test-deps/tmux-resurrect/scripts', import.meta.url));
-const IDS = [1, 2, 3].map(n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`);
-const waitFor = async predicate => {
-  for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 50)); }
-  throw new Error('Timed out waiting for fixture');
-};
-const events = root => { try { return fs.readFileSync(path.join(root, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse); } catch { return []; } };
-
-function fixture() {
-  const root = fs.realpathSync(fs.mkdtempSync('/tmp/claude-resurrect-test-'));
-  const socket = path.join(root, 'tmux.sock');
-  const claudeDir = path.join(root, 'claude');
-  const cwd = path.join(root, "project ' $(touch INJECTED)");
-  const binDir = path.join(root, "bin with ' spaces");
-  fs.mkdirSync(cwd); fs.mkdirSync(binDir); fs.mkdirSync(path.join(claudeDir, 'sessions'), { recursive: true });
-  const project = path.join(claudeDir, 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
-  fs.mkdirSync(project, { recursive: true });
-  for (const id of IDS) fs.writeFileSync(path.join(project, id + '.jsonl'), '{}\n');
-  const fake = path.join(binDir, 'claude');
-  fs.writeFileSync(fake, `#!${NODE}\nimport fs from 'node:fs';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-const root = ${JSON.stringify(root)};
-const id = process.argv[3];
-const start = execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } }).trim().replace(/\\s+/g, ' ');
-fs.writeFileSync(path.join(root, 'claude/sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, procStart: start, sessionId: id, cwd: process.cwd(), kind: 'interactive', entrypoint: 'cli' }));
-fs.appendFileSync(path.join(root, 'events.jsonl'), JSON.stringify({ args: process.argv.slice(2), id, cwd: process.cwd(), pane: process.env.TMUX_PANE, pid: process.pid, start }) + '\\n');
-setInterval(() => {}, 1000);
-`, { mode: 0o700 });
-  const tmux = (...args) => execFileSync('tmux', ['-S', socket, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
-  let env;
-  const start = (name = 'work') => {
-    execFileSync('tmux', ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', name, '-x', '200', '-y', '80', '/bin/sh'], { env: { ...process.env, TMUX: '', XDG_CONFIG_HOME: path.join(root, 'config') } });
-    env = { ...process.env, TMUX: tmux('display-message', '-p', '#{socket_path},#{pid},0'), TERM: 'xterm-256color' };
-    for (const [name, value] of Object.entries({
-      'default-shell': '/bin/sh', '@resurrect-dir': path.join(root, 'snapshots'),
-      '@resurrect-capture-pane-contents': 'off', '@resurrect-processes': 'false',
-      '@claude-resurrect-claude-dir': claudeDir,
-      '@claude-resurrect-state-dir': path.join(root, 'state'), '@claude-resurrect-command': fake,
-    })) tmux('set-option', '-g', name, value);
-    plugin('install');
-  };
-  const plugin = (...args) => execFileSync(NODE, [SCRIPT, ...args], { env, encoding: 'utf8', timeout: 15000 });
-  const hook = (name, ...args) => plugin('hook', name, ...args);
-  const save = () => execFileSync('/bin/bash', [path.join(RESURRECT, 'save.sh'), 'quiet'], { env, encoding: 'utf8', timeout: 30000 });
-  const restore = () => execFileSync('/bin/bash', [path.join(RESURRECT, 'restore.sh')], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 });
-  const stop = () => {
-    try { tmux('kill-server'); } catch {}
-    // Non-interactive test shells do not necessarily forward SIGHUP.
-    for (const e of events(root).filter(e => e.pane)) {
-      try { if (processes().get(e.pid)?.start === e.start) process.kill(e.pid, 'SIGTERM'); } catch {}
-    }
-  };
-  const pane = target => tmux('display-message', '-p', '-t', target, '#{pane_id}');
-  const run = (target, id) => tmux('respawn-pane', '-k', '-t', target, '-c', cwd, '/bin/sh', '-c', `${quote(fake)} --resume ${quote(id)}; exec /bin/sh`);
-  const last = () => fs.realpathSync(path.join(root, 'snapshots/last'));
-  const writeLast = value => fs.writeFileSync(last(), value);
-  return { root, cwd, fake, project, claudeDir, tmux, start, stop, plugin, hook, save, restore, pane, run, last, writeLast,
-    clean: () => { stop(); fs.rmSync(root, { recursive: true, force: true }); } };
-}
+import { quote } from '../src/resurrect.mjs';
+import { decodeManifest } from '../src/snapshot.mjs';
+import { IDS, fixture, savedFixture, waitFor, events } from './helpers.mjs';
 
 test('real Resurrect saves exact sessions, survives changed pane IDs, and reloads idempotently', async () => {
   const f = fixture();
@@ -126,63 +65,6 @@ test('real Resurrect saves exact sessions, survives changed pane IDs, and reload
   } finally { f.clean(); }
 });
 
-test('busy panes, active sessions, missing transcripts, and changed snapshots are skipped', async () => {
-  const f = fixture();
-  let outside;
-  try {
-    f.start();
-    f.run('work:0.0', IDS[0]);
-    await waitFor(() => events(f.root).length === 1);
-    f.save();
-    const transcript = path.join(f.project, IDS[0] + '.jsonl');
-    fs.unlinkSync(transcript);
-    f.hook('post-save-layout', f.last());
-    assert.equal(decodeManifest(fs.readFileSync(f.last(), 'utf8')).entries[0].id, IDS[0], 'verified IDs survive a missing transcript at save time');
-    const saveReport = fs.readdirSync(path.join(f.root, 'state')).find(n => n.endsWith('-save.json'));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'state', saveReport), 'utf8')).unavailable.length, 1);
-    fs.writeFileSync(transcript, '{}\n');
-    f.hook('post-save-layout', f.last());
-    const savedText = fs.readFileSync(f.last(), 'utf8');
-    const onlyPane = f.tmux('list-panes', '-a', '-F', '#{pane_id}:#{pane_pid}');
-    f.restore();
-    assert.equal(f.tmux('list-panes', '-a', '-F', '#{pane_id}:#{pane_pid}'), onlyPane, 'Resurrect must not replace a sole busy pane');
-    assert.equal(events(f.root).length, 1);
-    assert.equal(f.tmux('show-option', '-gqv', '@resurrect-never-overwrite'), '', 'temporary overwrite guard is cleared');
-    f.stop(); f.start('keep');
-    f.hook('pre-restore-all');
-    f.tmux('new-session', '-d', '-s', 'work', '/bin/sh', '-c', 'sleep 60');
-    const busyPid = f.tmux('display-message', '-p', '-t', 'work:0.0', '#{pane_pid}');
-    f.hook('post-restore-all');
-    assert.equal(f.tmux('display-message', '-p', '-t', 'work:0.0', '#{pane_pid}'), busyPid);
-    assert.equal(events(f.root).length, 1);
-    f.tmux('kill-session', '-t', 'work');
-    outside = spawn(f.fake, ['--resume', IDS[0]], { cwd: f.cwd, stdio: 'ignore', env: { ...process.env, TMUX: '', TMUX_PANE: '' } });
-    await waitFor(() => events(f.root).length === 2);
-    f.restore();
-    assert.equal(events(f.root).length, 2, 'already running outside tmux is not duplicated');
-    outside.kill(); await new Promise(resolve => outside.once('exit', resolve)); outside = null;
-    f.tmux('kill-session', '-t', 'work');
-    fs.unlinkSync(path.join(f.project, IDS[0] + '.jsonl'));
-    f.restore();
-    assert.equal(events(f.root).length, 2, 'missing transcript is not resumed');
-    f.tmux('kill-session', '-t', 'work');
-    fs.writeFileSync(path.join(f.project, IDS[0] + '.jsonl'), '{}\n');
-    fs.renameSync(f.cwd, f.cwd + '-missing');
-    f.restore();
-    assert.equal(events(f.root).length, 2, 'missing working directory is not resumed');
-    fs.renameSync(f.cwd + '-missing', f.cwd);
-    f.tmux('kill-session', '-t', 'work');
-    f.hook('pre-restore-all');
-    f.tmux('new-session', '-d', '-s', 'work', '/bin/sh');
-    f.writeLast(savedText + '\n');
-    f.hook('post-restore-all');
-    assert.equal(events(f.root).length, 2, 'changed snapshot invalidates pending restore');
-    f.writeLast('claude-resurrect\t{"version":1,"entries":[{}]}\n');
-    f.hook('pre-restore-all'); f.hook('post-restore-all');
-    assert.equal(events(f.root).length, 2, 'malformed metadata cannot launch a command');
-  } finally { outside?.kill(); f.clean(); }
-});
-
 test('an idle bootstrap pane at the saved address is replaced and resumed', async () => {
   const f = fixture();
   try {
@@ -239,7 +121,7 @@ test('TPM entry and hook runner work from a plugin path containing quotes and sp
     f.start();
     const pluginPath = path.join(f.root, "plugin ' with spaces");
     fs.mkdirSync(pluginPath);
-    for (const relative of ['src', 'bin', 'claude-resurrect.tmux']) {
+    for (const relative of ['src', 'bin', 'package.json', 'claude-resurrect.tmux']) {
       fs.cpSync(fileURLToPath(new URL('../' + relative, import.meta.url)), path.join(pluginPath, relative), { recursive: true });
     }
     const tmuxEnv = f.tmux('display-message', '-p', '#{socket_path},#{pid},0');
@@ -254,4 +136,83 @@ test('TPM entry and hook runner work from a plugin path containing quotes and sp
     assert.equal(diagnostic.liveNativeSessions, 1);
     assert.deepEqual(diagnostic.warnings, []);
   } finally { f.clean(); }
+});
+
+test('a missing transcript is reported at save time and retained for later recovery', async t => {
+  const f = await savedFixture(t);
+  fs.unlinkSync(path.join(f.project, IDS[0] + '.jsonl'));
+  f.hook('post-save-layout', f.last());
+  const status = JSON.parse(f.plugin('status'));
+  assert.equal(status.entries[0].id, IDS[0]);
+  assert.equal(status.reports.find(report => report.action === 'save').unavailable.length, 1);
+});
+
+test('a live sole pane survives repeated restores', async t => {
+  const f = await savedFixture(t);
+  const original = f.tmux('list-panes', '-a', '-F', '#{pane_id}:#{pane_pid}');
+  f.restore(); f.restore();
+  assert.equal(f.tmux('list-panes', '-a', '-F', '#{pane_id}:#{pane_pid}'), original);
+  assert.equal(events(f.root).length, 1);
+  assert.equal(f.tmux('show-option', '-gqv', '@resurrect-never-overwrite'), '');
+});
+
+test('a newly created busy pane is skipped', async t => {
+  const f = await savedFixture(t);
+  f.stop(); f.start('keep');
+  f.hook('pre-restore-all');
+  f.tmux('new-session', '-d', '-s', 'work', '/bin/sh', '-c', 'sleep 60');
+  const originalPid = f.tmux('display-message', '-p', '-t', 'work:0.0', '#{pane_pid}');
+  f.hook('post-restore-all');
+  assert.equal(f.tmux('display-message', '-p', '-t', 'work:0.0', '#{pane_pid}'), originalPid);
+  assert.equal(JSON.parse(f.plugin('status')).reports.find(report => report.action === 'restore').skipped[0].code, 'PANE_BUSY');
+});
+
+test('a session already running outside tmux is not duplicated', async t => {
+  const f = await savedFixture(t);
+  f.stop(); f.start('keep');
+  const outside = spawn(f.fake, ['--resume', IDS[0]], { cwd: f.cwd, stdio: 'ignore', env: { ...process.env, TMUX: '', TMUX_PANE: '' } });
+  try {
+    await waitFor(() => events(f.root).length === 2);
+    f.restore();
+    assert.equal(events(f.root).length, 2);
+    assert.equal(JSON.parse(f.plugin('status')).reports.find(report => report.action === 'restore').skipped[0].code, 'SESSION_ACTIVE');
+  } finally {
+    outside.kill();
+    await new Promise(resolve => outside.once('exit', resolve));
+  }
+});
+
+for (const missing of ['transcript', 'directory']) {
+  test(`restore skips a missing ${missing}`, async t => {
+    const f = await savedFixture(t);
+    f.stop(); f.start('keep');
+    if (missing === 'transcript') fs.unlinkSync(path.join(f.project, IDS[0] + '.jsonl'));
+    else fs.renameSync(f.cwd, f.cwd + '-missing');
+    f.restore();
+    assert.equal(events(f.root).length, 1);
+    assert.equal(JSON.parse(f.plugin('status')).reports.find(report => report.action === 'restore').skipped[0].code, 'FILES_MISSING');
+  });
+}
+
+test('changed snapshots abort restore and remain diagnosable through the CLI', async t => {
+  const f = await savedFixture(t);
+  f.stop(); f.start('keep');
+  f.hook('pre-restore-all');
+  f.tmux('new-session', '-d', '-s', 'work', '/bin/sh');
+  f.writeLast(fs.readFileSync(f.last(), 'utf8') + '\n');
+  f.hook('post-restore-all');
+  assert.equal(events(f.root).length, 1);
+  const status = JSON.parse(f.plugin('status'));
+  assert.match(status.reports.find(report => report.action === 'error').error, /Snapshot changed/);
+});
+
+test('status still shows the error report when the snapshot metadata is damaged', async t => {
+  const f = await savedFixture(t);
+  f.writeLast('claude-resurrect\t{"version":1,"entries":[null]}\n');
+  f.hook('pre-restore-all'); f.hook('post-restore-all');
+  const status = JSON.parse(f.plugin('status'));
+  assert.equal(status.snapshot, null);
+  assert.match(status.snapshotError, /metadata/);
+  assert.match(status.reports.find(report => report.action === 'error').error, /metadata/);
+  assert.equal(events(f.root).length, 1);
 });
