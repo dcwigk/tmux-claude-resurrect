@@ -17,6 +17,7 @@ The plugin is event driven. It does no work while a user is simply typing in tmu
 
 - `cli.mjs` handles arguments and output. The version comes from `package.json`.
 - `claude.mjs` owns native records, process ancestry, session selection, and transcript paths.
+- `arguments.mjs` reads process argument vectors and selects replayable Claude options. `procargs.py` is its macOS adapter.
 - `snapshot.mjs` owns Resurrect row positions and the versioned manifest format.
 - `resurrect.mjs` coordinates tmux, save/restore, shared state, and diagnostics.
 - `coordination.mjs` owns restore locks and launch claims, including process identity and expiry checks.
@@ -43,11 +44,11 @@ Files are limited to 1 MiB. Malformed, stale, or unfamiliar identities are ignor
 
 The process ancestry walk is cycle bounded. A wrapper shell between the pane process and Claude is supported. If Claude launches nested agents, the nearest eligible ancestor to the pane wins. Multiple equally near processes are ambiguous. One ID in multiple captured panes is also ambiguous. Verified IDs of any native session kind block duplicate launches, including a matching process outside tmux.
 
-This interface is internal to Claude Code. There is no assumed minimum Claude version or fallback to transcript timestamps. Unsupported records must remain skipped until the adapter and its tests are updated. Detection does not read conversation contents, credentials, raw command arguments, or private application logs.
+This interface is internal to Claude Code. There is no assumed minimum Claude version or fallback to transcript timestamps. Unsupported records must remain skipped until the adapter and its tests are updated. Detection does not read conversation contents, credential files, or private application logs. Once identity is established, the argument reader captures the process's argv and rechecks the native identity. See [argument handling](arguments.md) for supported options and privacy limits.
 
 ## Snapshot ownership
 
-A version-1 JSON manifest occupies one additional tab-delimited `claude-resurrect` row. Each entry contains the logical pane address, UUID, absolute working directory, and transcript path. Resurrect ignores unknown row types.
+A version-2 JSON manifest occupies one additional tab-delimited `claude-resurrect` row. Each entry contains the logical pane address, UUID, absolute working directory, transcript path, and either a validated argument array or an argument-capture error. Version-1 manifests remain readable without arguments. Resurrect ignores unknown row types.
 
 For a captured pane, the normal saved process command is cleared so upstream process restoration cannot also launch it. Other pane rows are preserved. The manifest is sorted and contains no capture timestamp, allowing Resurrect's unchanged-snapshot deduplication to keep working.
 
@@ -55,7 +56,7 @@ The write happens during `post-save-layout`, before upstream moves its `last` sy
 
 Only a single, supported manifest is accepted. Duplicate positions/IDs, control characters, relative paths, unsupported versions, more than 10,000 entries, and snapshots larger than 16 MiB are rejected. The selected snapshot must resolve directly inside the configured Resurrect directory. A transcript must resolve inside the selected profile's `projects/` tree, have the matching UUID filename, and be a nonempty regular file. Its content is never read by this plugin.
 
-Snapshots and reports contain local paths and session IDs. Treat the Resurrect directory as private state. A manifest is not a portable backup of Claude conversations or projects, and these checks do not make an attacker-controlled local snapshot trustworthy.
+Snapshots and reports contain local paths and session IDs. Snapshots also contain retained argument values, which may include secrets in inline settings. Treat the Resurrect directory as private state. A manifest is not a portable backup of Claude conversations or projects, and these checks do not make an attacker-controlled local snapshot trustworthy.
 
 ## Restore lifecycle
 
@@ -64,12 +65,12 @@ Snapshots and reports contain local paths and session IDs. Treat the Resurrect d
 3. Acquire an exclusive lock in the shared state directory. A live owner blocks a second Claude launch pass. An interrupted lock requires explicit recovery, avoiding automatic stale-lock reclamation races.
 4. For each entry, locate the logical pane. Existing panes are excluded unless upstream demonstrably replaced an originally idle process. Validate the working directory and transcript again.
 5. Wait at most four seconds total for new shells to settle. A candidate must be a recognized shell, outside copy mode, with no child processes. Check live native IDs and startup claims.
-6. Recheck pane identity and idleness immediately before `respawn-pane`. Launch an argument-quoted command with only `--resume <UUID>`, set the selected Claude profile, and retain a shell after Claude exits.
+6. Recheck pane identity and idleness immediately before `respawn-pane`. Launch an argument-quoted command with `--resume <UUID>` and the saved options, set the selected Claude profile, and retain a shell after Claude exits. An argument-capture error prevents that session from launching.
 7. Record a launch claim containing PID/start identity and write the diagnostic report, including partial progress after an error. Release only a lock still owned by this invocation.
 
 A failed individual pane launch is recorded and does not prevent subsequent eligible panes from starting. Snapshot-integrity errors, registry read failures, lost lock ownership, and claim read/write failures abort the pass. Lock ownership is checked again immediately before each launch.
 
-The four-second wait is a shared budget, not four seconds per pane. Process and tmux queries have timeouts. There is no `send-keys` injection, shell-history replay, or permission-bypass flag.
+The four-second wait is a shared budget, not four seconds per pane. Process and tmux queries have timeouts. There is no `send-keys` injection or shell-history replay. Permission-bypass options are retained only when explicitly present in that session's arguments.
 
 Claims bridge the interval before a new Claude process publishes its native record. They expire after 60 seconds or when their owning process exits. If Claude takes longer to register, duplicate detection is limited by that timeout. Coordination covers servers sharing the same plugin state directory and visible process namespace. It is not a distributed lock across hosts or containers.
 
@@ -81,7 +82,7 @@ The executable root `.tmux` entry follows [TPM's plugin contract](https://github
 
 Installation saves pre-existing Resurrect hook commands and invokes them first, once. Reload is idempotent. A failed prior hook is recorded without preventing this plugin's work; prior hooks have a 30-second timeout. Uninstall restores an earlier command only if this plugin still owns the current hook. Changes made by another plugin are retained.
 
-No Claude settings, terminal colors, pane titles, or key bindings are changed. The runtime uses only Node's standard library and standard system tools.
+No Claude settings, terminal colors, pane titles, or key bindings are changed. The runtime uses Node's standard library and standard system tools, plus Python's standard library for the macOS argument reader.
 
 ## Verification scope
 

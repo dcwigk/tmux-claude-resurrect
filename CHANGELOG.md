@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Capture supported launch arguments per Claude session, including explicit permission flags, models, tool restrictions, and inline settings.
+- Read exact argument boundaries from Linux `/proc` or macOS `KERN_PROCARGS2`; macOS now requires Python 3.
+- Save version-2 manifests, retain version-1 compatibility, and skip sessions whose arguments cannot be captured reliably.
+- Omit initial prompts, old session selectors, and worktree creation when resuming the saved conversation.
+
 ## 0.1.0 — 2026-09-15
 
 Initial public release.

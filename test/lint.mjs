@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
+execFileSync('python3', ['-c', 'import ast; ast.parse(open("src/procargs.py").read())'], { stdio: 'inherit' });
 for (const directory of ['src', 'test']) {
   for (const file of fs.readdirSync(directory).filter(file => file.endsWith('.mjs'))) {
     execFileSync(process.execPath, ['--check', `${directory}/${file}`], { stdio: 'inherit' });

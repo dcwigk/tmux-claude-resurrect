@@ -9,6 +9,7 @@ import { processes, readNativeSessions, selectSessions, paneKey, idle,
   transcriptFor, transcriptValid, projectTranscriptPath } from './claude.mjs';
 import { readLayout, snapshotPanes, readSnapshot, writeSnapshot } from './snapshot.mjs';
 import { acquireLock, readClaims, recordLaunch } from './coordination.mjs';
+import { readProcessArguments, claudeArguments, restoreArguments } from './arguments.mjs';
 
 const RUNNER = fileURLToPath(new URL('../bin/claude-resurrect', import.meta.url));
 const PREFIX = '@claude-resurrect-';
@@ -48,7 +49,8 @@ export function context() {
     return { session, window, pane, paneId, pid: Number(pid), command, cwd, inMode };
   });
   return { tmux, option, expand, claudeDir, resurrectDir, stateDir, server, panes,
-    processes, now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) };
+    processes, readArguments: readProcessArguments,
+    now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) };
 }
 
 export function install(runtime) {
@@ -98,17 +100,43 @@ export function capture(runtime, panes, table = runtime.processes()) {
   const { sessions, warnings } = readNativeSessions(runtime.claudeDir, table);
   const selection = selectSessions(panes, table, sessions);
   const unavailable = [];
+  let argumentsByPid = new Map(), argumentsError;
+  try {
+    argumentsByPid = runtime.readArguments(selection.entries.map(entry => entry.pid));
+  } catch (error) {
+    argumentsError = error.message;
+  }
+  // A process may exit or switch conversations while its arguments are being read.
+  const current = selection.entries.length
+    ? readNativeSessions(runtime.claudeDir, runtime.processes()).sessions : [];
   const entries = selection.entries.map(entry => {
+    const { pid, procStart, ...saved } = entry;
+    let args, argsError;
+    try {
+      if (argumentsError) throw new Error(argumentsError);
+      const observed = argumentsByPid.get(pid);
+      if (!observed?.args) throw new Error(observed?.error || 'Native process arguments are unavailable');
+      if (!current.some(record => record.pid === pid && record.procStart === procStart && record.sessionId === entry.id)) {
+        throw new Error('Claude process identity changed while reading arguments');
+      }
+      args = restoreArguments(claudeArguments(observed.args));
+    } catch (error) {
+      argsError = error.message;
+    }
     let transcript = null;
+    let fileError;
     try {
       transcript = transcriptFor(runtime.claudeDir, entry.id, entry.cwd);
       if (!directoryExists(entry.cwd) || !transcript) {
-        unavailable.push({ target: paneKey(entry), id: entry.id, reason: 'Missing directory or transcript' });
+        fileError = 'Missing directory or transcript';
       }
     } catch (error) {
-      unavailable.push({ target: paneKey(entry), id: entry.id, reason: error.message });
+      fileError = error.message;
     }
-    return { ...entry, transcript: transcript || projectTranscriptPath(runtime.claudeDir, entry.id, entry.cwd) };
+    if (argsError || fileError) unavailable.push({ target: paneKey(entry), id: entry.id,
+      reason: [argsError, fileError].filter(Boolean).join('; ') });
+    return { ...saved, ...(argsError ? { argsError } : { args }),
+      transcript: transcript || projectTranscriptPath(runtime.claudeDir, entry.id, entry.cwd) };
   });
   return { entries, unavailable, skipped: selection.skipped, warnings, liveNativeSessions: sessions.length };
 }
@@ -191,6 +219,7 @@ function validatePending(pending, saved, runtime) {
 }
 
 async function preparePane(runtime, entry, pending, deadline) {
+  if (entry.argsError) return { skipped: { code: 'ARGUMENTS_UNAVAILABLE', reason: entry.argsError } };
   let pane = runtime.panes().find(pane => paneKey(pane) === paneKey(entry));
   const original = pending.panes.find(previous => previous.paneId === pane?.paneId);
   let reason = paneSkipReason(pane, original, runtime.processes());
@@ -218,10 +247,11 @@ async function preparePane(runtime, entry, pending, deadline) {
 function launchPane(runtime, entry, pane, { command, shell, claims }, result) {
   const target = { target: paneKey(entry), id: entry.id };
   // Keep the wrapper alive on Ctrl-C so it can open a login shell after Claude exits.
-  const wrapper = `trap ':' INT; ${quote(command)} --resume ${quote(entry.id)}; exec ${quote(shell)} -l`;
+  const wrapper = `trap ':' INT; "$@"; exec ${quote(shell)} -l`;
   try {
     runtime.tmux('respawn-pane', '-k', '-t', pane.paneId, '-c', entry.cwd,
-      '-e', `CLAUDE_CONFIG_DIR=${runtime.claudeDir}`, '/bin/sh', '-c', wrapper);
+      '-e', `CLAUDE_CONFIG_DIR=${runtime.claudeDir}`, '/bin/sh', '-c', wrapper,
+      'claude-resurrect', command, '--resume', entry.id, ...(entry.args || []));
   } catch (error) {
     // Continue after a pane failure only if the tmux server is still reachable.
     runtime.tmux('display-message', '-p', '#{pid}');

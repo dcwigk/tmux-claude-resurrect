@@ -30,7 +30,7 @@ export function fixture({ install = true } = {}) {
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 const root = ${JSON.stringify(root)};
-const id = process.argv[3];
+const id = process.argv[process.argv.indexOf('--resume') + 1];
 const start = execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } }).trim().replace(/\\s+/g, ' ');
 const publish = () => fs.writeFileSync(path.join(root, 'claude/sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, procStart: start, sessionId: id, cwd: process.cwd(), kind: 'interactive', entrypoint: 'cli' }));
 const gate = path.join(root, 'hold-registry');
@@ -69,7 +69,8 @@ setInterval(() => {}, 1000);
     }
   };
   const pane = target => tmux('display-message', '-p', '-t', target, '#{pane_id}');
-  const run = (target, id) => tmux('respawn-pane', '-k', '-t', target, '-c', cwd, '/bin/sh', '-c', `${quote(fake)} --resume ${quote(id)}; exec /bin/sh`);
+  const run = (target, id, args = []) => tmux('respawn-pane', '-k', '-t', target, '-c', cwd, '/bin/sh', '-c',
+    `${[fake, '--resume', id, ...args].map(quote).join(' ')}; exec /bin/sh`);
   const last = () => fs.realpathSync(path.join(root, 'snapshots/last'));
   const writeLast = value => fs.writeFileSync(last(), value);
   return { root, cwd, fake, project, claudeDir, tmux, start, stop, plugin, hook, save, restore, pane, run, last, writeLast,

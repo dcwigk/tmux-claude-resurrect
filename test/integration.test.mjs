@@ -80,6 +80,61 @@ test('an idle bootstrap pane at the saved address is replaced and resumed', asyn
   } finally { f.clean(); }
 });
 
+test('real save and restore preserve different arguments per session without replaying prompts or shell syntax', async t => {
+  const f = fixture();
+  t.after(f.clean);
+  f.start();
+  f.tmux('split-window', '-d', '-t', 'work:0', '/bin/sh');
+  const literal = "literal 'quoted' $(touch INJECTED_ARGS) `touch INJECTED_ARGS`\nsecond line";
+  const first = ['--dangerously-skip-permissions', '--model=opus', '--append-system-prompt', literal,
+    '--settings', '{"env":{"EXAMPLE":"a b"}}'];
+  const second = ['--permission-mode', 'plan', '--tools', ''];
+  f.run('work:0.0', IDS[0], [...first, 'one-shot prompt must not run again']);
+  f.run('work:0.1', IDS[1], second);
+  await waitFor(() => events(f.root).length === 2);
+  f.save();
+  const manifest = decodeManifest(fs.readFileSync(f.last(), 'utf8'));
+  assert.equal(manifest.version, 2);
+  assert.deepEqual(manifest.entries.map(entry => entry.args), [first, second]);
+  assert.equal(JSON.stringify(manifest).includes('one-shot prompt'), false);
+  f.stop(); f.start('keep'); f.restore();
+  await waitFor(() => events(f.root).length === 4);
+  const resumed = events(f.root).slice(2).sort((a, b) => a.id.localeCompare(b.id));
+  assert.deepEqual(resumed.map(entry => entry.args), [first, second].map((args, i) => ['--resume', IDS[i], ...args]));
+  assert.equal(fs.existsSync(path.join(f.cwd, 'INJECTED_ARGS')), false);
+  f.save();
+  assert.deepEqual(decodeManifest(fs.readFileSync(f.last(), 'utf8')).entries.map(entry => entry.args), [first, second]);
+});
+
+test('unsupported launch arguments keep the session mapping but prevent a partial restore', async t => {
+  const f = fixture();
+  t.after(f.clean);
+  f.start();
+  f.run('work:0.0', IDS[0], ['--future-unknown-option', 'private value']);
+  await waitFor(() => events(f.root).length === 1);
+  f.save();
+  const manifest = decodeManifest(fs.readFileSync(f.last(), 'utf8'));
+  assert.equal(manifest.entries[0].id, IDS[0]);
+  assert.equal(manifest.entries[0].argsError, 'Unsupported Claude launch option');
+  assert.equal(JSON.stringify(manifest).includes('private value'), false);
+  f.stop(); f.start('keep'); f.restore();
+  const report = JSON.parse(f.plugin('status')).reports.find(report => report.action === 'restore');
+  assert.equal(report.skipped[0].code, 'ARGUMENTS_UNAVAILABLE');
+  assert.equal(events(f.root).length, 1);
+});
+
+test('legacy version 1 snapshots remain restorable without captured arguments', async t => {
+  const f = await savedFixture(t);
+  const text = fs.readFileSync(f.last(), 'utf8');
+  const manifest = decodeManifest(text);
+  manifest.version = 1;
+  for (const entry of manifest.entries) delete entry.args;
+  f.writeLast(text.replace(/^claude-resurrect\t.*$/m, 'claude-resurrect\t' + JSON.stringify(manifest)));
+  f.stop(); f.start('keep'); f.restore();
+  await waitFor(() => events(f.root).length === 2);
+  assert.deepEqual(events(f.root)[1].args, ['--resume', IDS[0]]);
+});
+
 test('malformed metadata still protects the sole busy pane from upstream overwrite', async () => {
   const f = fixture();
   try {

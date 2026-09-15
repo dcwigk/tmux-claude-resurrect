@@ -7,7 +7,7 @@ import { isText, isUUID, readJSON, listDirectory, directoryExists } from './file
 /** @typedef {PaneAddress & { paneId: string, pid: number, command: string, inMode: string }} Pane */
 /** @typedef {{ pid: number, ppid: number, tty: string, start: string, command: string }} Process */
 /** @typedef {{ pid: number, procStart: string, sessionId: string, cwd: unknown, kind: unknown, entrypoint: unknown }} NativeSession */
-/** @typedef {PaneAddress & { id: string, cwd: string }} CapturedSession */
+/** @typedef {PaneAddress & { id: string, cwd: string, pid: number, procStart: string }} CapturedSession */
 
 const PROCESS_QUERY_TIMEOUT_MS = 10000;
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh']);
@@ -102,12 +102,12 @@ export function selectSessions(panes, table, registry) {
       skip('AMBIGUOUS_SESSION', 'Ambiguous sessions');
       continue;
     }
-    const { sessionId: id, cwd } = sessions[0];
+    const { sessionId: id, cwd, pid, procStart } = sessions[0];
     if (!isText(cwd) || !path.isAbsolute(cwd)) {
       skip('INVALID_CWD', 'Invalid working directory');
       continue;
     }
-    entries.push({ session: pane.session, window: pane.window, pane: pane.pane, id, cwd });
+    entries.push({ session: pane.session, window: pane.window, pane: pane.pane, id, cwd, pid, procStart });
   }
   const counts = new Map();
   for (const entry of entries) counts.set(entry.id, (counts.get(entry.id) || 0) + 1);

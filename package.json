@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "test:unit": "node --test test/unit.test.mjs test/restore.test.mjs",
+    "test:unit": "node --test test/unit.test.mjs test/restore.test.mjs test/arguments.test.mjs",
     "test:integration": "node --test test/integration.test.mjs",
     "test:deps": "sh test/setup-deps.sh",
     "lint": "node test/lint.mjs"

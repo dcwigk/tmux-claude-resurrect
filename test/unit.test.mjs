@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { parseProcesses, distance, readNativeSessions, selectSessions, transcriptValid, transcriptFor, idle, processes } from '../src/claude.mjs';
 import { decodeManifest, readSnapshot } from '../src/snapshot.mjs';
 import { atomicJSON, readJSON } from '../src/files.mjs';
-import { quote, paneSkipReason } from '../src/resurrect.mjs';
+import { quote, paneSkipReason, capture } from '../src/resurrect.mjs';
 import { acquireLock, unlock, activeClaims } from '../src/coordination.mjs';
 
 const IDS = [1, 2].map(n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`);
@@ -113,12 +113,51 @@ test('manifest rejects malformed schemas, duplicate positions, duplicate IDs and
   const entry = { session: 'work', window: '0', pane: '0', id: IDS[0], cwd: f.root, transcript: f.transcript };
   assert.equal(decodeManifest(manifest([entry])).entries.length, 1);
   for (const input of ['', 'claude-resurrect\tnull', manifest([entry]) + '\n' + manifest([]),
-    'claude-resurrect\t{"version":2,"entries":[]}', manifest([entry, entry]),
+    'claude-resurrect\t{"version":3,"entries":[]}', manifest([entry, entry]),
     manifest([entry, { ...entry, pane: '1' }]), manifest([{ ...entry, cwd: 'relative' }]),
     manifest([{ ...entry, window: 0 }]), manifest([{ ...entry, id: [IDS[0]] }]),
     manifest([{ ...entry, session: 'bad\nname' }]), manifest([{ ...entry, transcript: '../file' }])]) {
     assert.throws(() => decodeManifest(input), input);
   }
+});
+
+test('argument capture retains failed mappings and detects conversation changes during the read', t => {
+  const f = fixture(t);
+  f.write(f.record);
+  const runtime = { ...f.c, processes: table,
+    readArguments: () => new Map([[42, { args: ['claude', '--dangerously-skip-permissions'] }]]) };
+  const saved = capture(runtime, f.panes);
+  assert.deepEqual(saved.entries[0].args, ['--dangerously-skip-permissions']);
+  assert.equal(saved.entries[0].pid, undefined, 'process identity is not a restore address');
+  runtime.readArguments = () => { throw new Error('reader unavailable'); };
+  const failed = capture(runtime, f.panes);
+  assert.equal(failed.entries[0].id, IDS[0]);
+  assert.equal(failed.entries[0].args, undefined);
+  assert.equal(failed.entries[0].argsError, 'reader unavailable');
+  assert.match(failed.unavailable[0].reason, /reader unavailable/);
+  runtime.readArguments = () => {
+    f.write({ ...f.record, sessionId: IDS[1] });
+    return new Map([[42, { args: ['claude', '--dangerously-skip-permissions'] }]]);
+  };
+  const changed = capture(runtime, f.panes);
+  assert.match(changed.entries[0].argsError, /identity changed/);
+});
+
+test('version 2 manifests validate replayable argument arrays and version 1 stays readable', t => {
+  const f = fixture(t);
+  const entry = { session: 'work', window: '0', pane: '0', id: IDS[0], cwd: f.root, transcript: f.transcript };
+  const encode = extra => 'claude-resurrect\t' + JSON.stringify({ version: 2, entries: [{ ...entry, ...extra }] });
+  assert.equal(decodeManifest(manifest([entry])).version, 1);
+  const args = ['--permission-mode', 'plan', '--tools', '', '--system-prompt', "line one\nline 'two'"];
+  assert.deepEqual(decodeManifest(encode({ args })).entries[0].args, args);
+  assert.equal(decodeManifest(encode({ argsError: 'unavailable' })).entries[0].argsError, 'unavailable');
+  for (const extra of [{}, { args: null }, { args: '--verbose' }, { args: [1] },
+    { args: ['--resume', IDS[1]] }, { args: ['--fork-session'] }, { args: ['old prompt'] },
+    { args: ['--print'] }, { args: ['--unknown-flag'] }, { args: ['--model'] },
+    { args: ['--model', 'a\0b'] }, { args: [], argsError: 'failed' }, { argsError: '' }]) {
+    assert.throws(() => decodeManifest(encode(extra)), /argument metadata/);
+  }
+  assert.throws(() => decodeManifest(manifest([{ ...entry, args: [] }])), /legacy/);
 });
 
 test('snapshot selection refuses external paths and oversized files', t => {

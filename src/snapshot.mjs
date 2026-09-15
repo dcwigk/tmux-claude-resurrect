@@ -3,9 +3,11 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isText, isUUID, readFile, atomicWrite } from './files.mjs';
 import { paneKey } from './claude.mjs';
+import { validRestoreArguments } from './arguments.mjs';
 
-/** @typedef {import('./claude.mjs').CapturedSession & { transcript: string }} SavedSession */
-/** @typedef {{ version: 1, entries: SavedSession[] }} Manifest */
+/** @typedef {Omit<import('./claude.mjs').CapturedSession, 'pid' | 'procStart'> &
+ * { transcript: string, args?: string[], argsError?: string }} SavedSession */
+/** @typedef {{ version: 1 | 2, entries: SavedSession[] }} Manifest */
 const ROW = 'claude-resurrect\t';
 const MAX_ENTRIES = 10000;
 const PANE_FIELDS = { session: 1, window: 2, pane: 5, command: 10 };
@@ -23,7 +25,7 @@ export function decodeManifest(text) {
   const rows = text.split('\n').filter(line => line.startsWith(ROW));
   if (rows.length !== 1) throw new Error('Snapshot has no unique Claude metadata');
   const manifest = JSON.parse(rows[0].slice(ROW.length));
-  if (manifest?.version !== 1 || !Array.isArray(manifest.entries) || manifest.entries.length > MAX_ENTRIES) {
+  if (![1, 2].includes(manifest?.version) || !Array.isArray(manifest.entries) || manifest.entries.length > MAX_ENTRIES) {
     throw new Error('Unsupported Claude metadata');
   }
   const positions = new Set(), ids = new Set();
@@ -35,6 +37,13 @@ export function decodeManifest(text) {
       || positions.has(paneKey(entry)) || ids.has(entry.id.toLowerCase())) {
       throw new Error('Invalid or ambiguous Claude metadata');
     }
+    if (manifest.version === 2) {
+      const validArgs = validRestoreArguments(entry.args) && entry.argsError === undefined;
+      const unavailableArgs = entry.args === undefined && isText(entry.argsError);
+      if (!validArgs && !unavailableArgs) throw new Error('Invalid Claude argument metadata');
+    } else if (entry.args !== undefined || entry.argsError !== undefined) {
+      throw new Error('Unexpected arguments in legacy Claude metadata');
+    }
     entry.id = entry.id.toLowerCase();
     positions.add(paneKey(entry));
     ids.add(entry.id);
@@ -44,7 +53,7 @@ export function decodeManifest(text) {
 
 /** @param {SavedSession[]} entries */
 export function encodeSnapshot(text, entries) {
-  const manifest = { version: 1, entries };
+  const manifest = { version: 2, entries };
   const metadata = ROW + JSON.stringify(manifest);
   decodeManifest(metadata);
   const captured = new Set(entries.map(paneKey));

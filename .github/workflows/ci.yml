@@ -20,10 +20,10 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Install test tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y tmux shellcheck procps
+        run: sudo apt-get update && sudo apt-get install -y tmux shellcheck procps python3
       - name: Install test tools (macOS)
         if: runner.os == 'macOS'
-        run: brew install tmux shellcheck
+        run: brew install tmux shellcheck python
       - run: npm run test:deps
       - run: npm run lint
       - run: npm test

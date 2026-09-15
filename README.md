@@ -2,7 +2,7 @@
 
 Resume the **exact Claude Code conversation in each restored tmux pane**.
 
-The plugin reads Claude Code's native session registry, verifies each session against a running process, and saves the mapping alongside the tmux-resurrect layout. On restore, it launches `claude --resume <session-id>` in the corresponding pane and working directory.
+The plugin reads Claude Code's native session registry, verifies each session against a running process, and saves the mapping and supported launch arguments alongside the tmux-resurrect layout. On restore, it launches `claude --resume <session-id>` with those arguments in the corresponding pane and working directory.
 
 **No Claude hooks, custom logs, background watcher, or npm dependencies.** Node.js is required to run the plugin.
 
@@ -12,6 +12,7 @@ The plugin reads Claude Code's native session registry, verifies each session ag
 
 - macOS or Linux, tmux 3.2 or newer, Bash, and `ps` (the `procps` package on Debian/Ubuntu).
 - Node.js 22 or newer, available to the tmux server.
+- On macOS, Python 3 available as `python3` in the tmux server's `PATH` (`brew install python`). No Python packages are needed. Linux reads arguments directly from `/proc`.
 - [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) and optionally [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum).
 - An authenticated Claude Code installation that writes compatible `sessions/<pid>.json` records and persists conversations under its `projects/` directory.
 
@@ -49,6 +50,7 @@ Save at least once with this plugin installed. Old snapshots have no Claude meta
 | Item | Behavior |
 | --- | --- |
 | Conversation | Resume by exact session UUID, never by “latest in this directory” |
+| Launch arguments | Preserve supported options per session, including explicit permission flags, models, and tool restrictions |
 | Working directory | Use the saved directory; skip if it no longer exists |
 | Pane address | Match session name, window index, and pane index; live pane IDs may change |
 | Running sessions | Skip IDs already present in the verified native registry |
@@ -58,7 +60,13 @@ Save at least once with this plugin installed. Old snapshots have no Claude meta
 | Other processes | Leave their snapshot rows to tmux-resurrect |
 | Exit from Claude | Return to the configured default shell in the same pane |
 
-This resumes a conversation, not an interrupted operating-system process or a tool call in progress. Only `--resume <id>` is passed. Per-invocation environment variables, extra directories, custom MCP settings, and other launch flags are not reconstructed. Claude applies its own configuration and session behavior when it starts.
+This resumes a conversation, not an interrupted operating-system process or a tool call in progress. Arguments are captured automatically from the verified process. For example, a session started with `claude --dangerously-skip-permissions` resumes with that flag; a session started with `--permission-mode plan` keeps that option. Permission bypass is never added to a session that did not request it through its launch arguments.
+
+Initial prompts are not replayed. Old resume/session selectors and worktree-creation flags are replaced by the saved UUID and working directory. Unknown options or unreadable arguments retain the session mapping but prevent its automatic launch, with a reason in `doctor` or `status`. See [argument support and limits](docs/arguments.md).
+
+Per-invocation environment variables and in-session option changes are not reconstructed. Referenced files must still exist, and relative paths resolve from the saved working directory. Claude applies its own configuration and session behavior when it starts. Snapshots can contain sensitive argument values, including inline settings; keep them private.
+
+After upgrading from 0.1.0, save again to capture arguments. Older snapshots still restore using only `--resume <id>`.
 
 ## Options
 
@@ -117,7 +125,7 @@ npm run lint
 npm test
 ```
 
-No `npm install` is needed. Tests use temporary directories, isolated tmux sockets, a synthetic Claude executable, and pinned upstream TPM and tmux-resurrect checkouts. They cover TPM cloning and loading the plugin as well as save/restore. They never authenticate with Claude or use your conversations. `npm run test:unit` runs without these integration dependencies.
+No `npm install` is needed. Development checks require Python 3 on both platforms. Tests use temporary directories, isolated tmux sockets, a synthetic Claude executable, and pinned upstream TPM and tmux-resurrect checkouts. They cover TPM cloning and loading the plugin as well as save/restore. They never authenticate with Claude or use your conversations. `npm run test:unit` runs without tmux or the upstream checkouts.
 
 See [the design and compatibility contract](docs/design.md) for implementation details,
 the [changelog](CHANGELOG.md) for releases, and [contributing](CONTRIBUTING.md) for useful bug reports.
