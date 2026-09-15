@@ -117,7 +117,7 @@ npm run lint
 npm test
 ```
 
-No `npm install` is needed. Tests use temporary directories, isolated tmux sockets, a synthetic Claude executable, and a pinned upstream tmux-resurrect checkout. They never authenticate with Claude or use your conversations. `npm run test:unit` runs without tmux-resurrect.
+No `npm install` is needed. Tests use temporary directories, isolated tmux sockets, a synthetic Claude executable, and pinned upstream TPM and tmux-resurrect checkouts. They cover TPM cloning and loading the plugin as well as save/restore. They never authenticate with Claude or use your conversations. `npm run test:unit` runs without these integration dependencies.
 
 See [the design and compatibility contract](docs/design.md) for implementation details and [contributing](CONTRIBUTING.md) for useful bug reports.
 

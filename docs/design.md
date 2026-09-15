@@ -88,4 +88,6 @@ Unit tests exercise session selection, pane eligibility, and claim expiry using 
 
 Integration tests run the pinned upstream Resurrect save/restore scripts against isolated real tmux servers. Synthetic processes publish the minimum native registry fields and record their launch arguments. Scenarios include changed pane IDs, multiple sessions in one project, repeated restore, bootstrap replacement, busy-pane protection, missing files, malformed or changed snapshots, an already-running session outside tmux, prior-hook failures, uninstall, and plugin/executable paths with quotes and spaces.
 
+A separate scenario uses real TPM to clone a temporary Git repository containing the runtime, load it through `@plugin`, reload it repeatedly, and save/restore through the installed Resurrect scripts. It uses an isolated XDG configuration and local Git URLs, exercising TPM's installation path without publishing a repository or loading the user's plugins.
+
 The tests exercise the mechanics without paid Claude calls or real conversation files. Native detection has separately been observed with Claude Code 2.1.272 on macOS. A green test suite cannot promise that a future Claude release retains this undocumented registry.

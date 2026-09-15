@@ -14,7 +14,7 @@ export const waitFor = async predicate => {
 };
 export const events = root => { try { return fs.readFileSync(path.join(root, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse); } catch { return []; } };
 
-export function fixture() {
+export function fixture({ install = true } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/claude-resurrect-test-'));
   const socket = path.join(root, 'tmux.sock');
   const claudeDir = path.join(root, 'claude');
@@ -46,7 +46,7 @@ setInterval(() => {}, 1000);
       '@claude-resurrect-claude-dir': claudeDir,
       '@claude-resurrect-state-dir': path.join(root, 'state'), '@claude-resurrect-command': fake,
     })) tmux('set-option', '-g', name, value);
-    plugin('install');
+    if (install) plugin('install');
   };
   const plugin = (...args) => execFileSync(NODE, [SCRIPT, ...args], { env, encoding: 'utf8', timeout: 15000 });
   const hook = (name, ...args) => plugin('hook', name, ...args);

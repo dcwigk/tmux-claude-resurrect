@@ -138,6 +138,70 @@ test('TPM entry and hook runner work from a plugin path containing quotes and sp
   } finally { f.clean(); }
 });
 
+test('TPM clones, loads, and reloads the plugin before saving and restoring exact sessions', async t => {
+  const f = fixture({ install: false });
+  t.after(f.clean);
+  const tpm = fileURLToPath(new URL('../.test-deps/tpm/', import.meta.url));
+  const resurrect = fileURLToPath(new URL('../.test-deps/tmux-resurrect', import.meta.url));
+  const source = path.join(f.root, 'source/tmux-claude-resurrect');
+  const plugins = path.join(f.root, 'plugins');
+  const config = path.join(f.root, 'config');
+  const installed = path.join(plugins, 'tmux-claude-resurrect');
+  fs.mkdirSync(source, { recursive: true });
+  for (const relative of ['src', 'bin', 'package.json', 'claude-resurrect.tmux']) {
+    fs.cpSync(fileURLToPath(new URL('../' + relative, import.meta.url)), path.join(source, relative), { recursive: true });
+  }
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+  const git = (...args) => execFileSync('git', ['-C', source, ...args], { env: gitEnv, encoding: 'utf8', timeout: 15000 });
+  git('init', '--quiet');
+  git('add', '.');
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Fixture');
+  fs.mkdirSync(path.join(config, 'tmux'), { recursive: true });
+  fs.writeFileSync(path.join(config, 'tmux/tmux.conf'), [
+    `set -g @plugin 'file://${resurrect}'`,
+    `set -g @plugin 'file://${source}'`,
+  ].join('\n') + '\n');
+  const run = (script, ...args) => execFileSync(script, args, {
+    env: { ...gitEnv, XDG_CONFIG_HOME: config,
+      PATH: [path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(path.delimiter),
+      TMUX: f.tmux('display-message', '-p', '#{socket_path},#{pid},0') },
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+  });
+  const load = () => {
+    f.tmux('set-environment', '-g', 'TMUX_PLUGIN_MANAGER_PATH', plugins + '/');
+    run(path.join(tpm, 'tpm'));
+  };
+  const resurrectAction = action => run(f.tmux('show-option', '-gqv', `@resurrect-${action}-script-path`), ...(action === 'save' ? ['quiet'] : []));
+
+  f.start();
+  assert.equal(f.tmux('show-option', '-gqv', '@resurrect-hook-post-save-layout'), '');
+  f.tmux('set-environment', '-g', 'TMUX_PLUGIN_MANAGER_PATH', plugins + '/');
+  run(path.join(tpm, 'scripts/install_plugins.sh'));
+  assert.equal(fs.lstatSync(installed).isSymbolicLink(), false);
+  assert.equal(execFileSync('git', ['-C', installed, 'rev-parse', 'HEAD'], { encoding: 'utf8' }), git('rev-parse', 'HEAD'));
+  run(path.join(tpm, 'scripts/install_plugins.sh'));
+  load(); load(); load();
+  const diagnostic = JSON.parse(run(path.join(installed, 'bin/claude-resurrect'), 'doctor'));
+  assert.equal(diagnostic.node, process.versions.node);
+  assert.equal(diagnostic.installed, true);
+  assert.deepEqual(diagnostic.warnings, []);
+  for (const hook of ['post-save-layout', 'pre-restore-all', 'post-restore-all']) {
+    assert.equal(f.tmux('show-option', '-gqv', '@resurrect-hook-' + hook), `${quote(path.join(installed, 'bin/claude-resurrect'))} hook ${quote(hook)}`);
+    assert.equal(f.tmux('show-option', '-gqv', '@claude-resurrect-previous-' + hook), '');
+  }
+  f.run('work:0.0', IDS[0]);
+  await waitFor(() => events(f.root).length === 1);
+  resurrectAction('save');
+  assert.equal(decodeManifest(fs.readFileSync(f.last(), 'utf8')).entries[0].id, IDS[0]);
+  f.stop(); f.start('keep'); load();
+  resurrectAction('restore');
+  await waitFor(() => events(f.root).length === 2);
+  assert.deepEqual(events(f.root)[1].args, ['--resume', IDS[0]]);
+  assert.equal(events(f.root)[1].pane, f.pane('work:0.0'));
+  resurrectAction('restore');
+  assert.equal(events(f.root).length, 2);
+});
+
 test('a missing transcript is reported at save time and retained for later recovery', async t => {
   const f = await savedFixture(t);
   fs.unlinkSync(path.join(f.project, IDS[0] + '.jsonl'));
