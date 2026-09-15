@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { quote } from '../src/resurrect.mjs';
+import { processes, readNativeSessions } from '../src/claude.mjs';
 import { decodeManifest } from '../src/snapshot.mjs';
 import { IDS, fixture, savedFixture, waitFor, events } from './helpers.mjs';
 
@@ -244,6 +245,52 @@ test('a session already running outside tmux is not duplicated', async t => {
     outside.kill();
     await new Promise(resolve => outside.once('exit', resolve));
   }
+});
+
+test('two servers share startup claims before Claude publishes its native registry record', async t => {
+  const first = fixture();
+  const second = fixture();
+  t.after(() => { second.clean(); first.clean(); });
+  first.start();
+  first.run('work:0.0', IDS[0]);
+  await waitFor(() => events(first.root).length === 1);
+  first.save();
+  first.stop();
+
+  const gate = path.join(first.root, 'hold-registry');
+  fs.writeFileSync(gate, '');
+  first.start('keep');
+  second.start('keep');
+  for (const [option, value] of Object.entries({
+    '@resurrect-dir': path.join(first.root, 'snapshots'),
+    '@claude-resurrect-state-dir': path.join(first.root, 'state'),
+    '@claude-resurrect-claude-dir': first.claudeDir,
+    '@claude-resurrect-command': first.fake,
+  })) second.tmux('set-option', '-g', option, value);
+
+  first.restore();
+  await waitFor(() => events(first.root).length === 2);
+  const resumed = events(first.root)[1];
+  const record = path.join(first.claudeDir, 'sessions', resumed.pid + '.json');
+  assert.equal(fs.existsSync(record), false, 'the resumed process has not registered yet');
+  assert.deepEqual(readNativeSessions(first.claudeDir, processes()).sessions, []);
+  assert.equal(fs.existsSync(path.join(first.root, 'state/restore.lock')), false, 'the first launch pass has finished');
+
+  second.restore();
+  const report = JSON.parse(second.plugin('status')).reports.find(report => report.action === 'restore');
+  assert.deepEqual(report.launched, []);
+  assert.deepEqual(report.skipped.map(entry => entry.code), ['SESSION_ACTIVE']);
+  assert.equal(events(first.root).length, 2, 'the shared claim prevents a second launch');
+
+  fs.unlinkSync(gate);
+  await waitFor(() => fs.existsSync(record));
+  assert.equal(readNativeSessions(first.claudeDir, processes()).sessions[0].sessionId, IDS[0]);
+  first.stop();
+  second.tmux('kill-session', '-t', 'work');
+  second.restore();
+  await waitFor(() => events(first.root).length === 3);
+  assert.deepEqual(events(first.root)[2].args, ['--resume', IDS[0]]);
+  assert.equal(events(first.root)[2].pane, second.pane('work:0.0'));
 });
 
 for (const missing of ['transcript', 'directory']) {

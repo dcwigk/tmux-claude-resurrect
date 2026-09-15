@@ -69,6 +69,38 @@ test('one failed pane launch does not prevent a later eligible pane from startin
   assert.equal(fs.existsSync(path.join(f.stateDir, 'restore.lock')), false);
 });
 
+test('a tmux server failure aborts the launch pass after the first failed pane', async t => {
+  const f = fixture(t);
+  const tmux = f.runtime.tmux;
+  f.onSpawn(() => { throw new Error('respawn failed'); });
+  f.runtime.tmux = (...args) => {
+    if (args[0] === 'display-message' && args[2] === '#{pid}') throw new Error('tmux server unavailable');
+    return tmux(...args);
+  };
+  await assert.rejects(afterRestore(f.runtime), /tmux server unavailable/);
+  assert.equal(f.calls.filter(call => call[0] === 'respawn-pane').length, 1);
+  assert.match(f.restoreReport().error, /tmux server unavailable/);
+  assert.equal(fs.existsSync(path.join(f.stateDir, 'restore.lock')), false);
+});
+
+test('busy panes share one wait budget for the entire restore', async t => {
+  const f = fixture(t);
+  const processes = f.runtime.processes;
+  f.runtime.processes = () => {
+    const observed = processes();
+    for (const pane of f.runtime.panes()) {
+      const pid = pane.pid + 100;
+      observed.set(pid, { pid, ppid: pane.pid, start: START, command: 'sleep' });
+    }
+    return observed;
+  };
+  const sleep = t.mock.method(f.runtime, 'sleep');
+  await afterRestore(f.runtime);
+  assert.equal(sleep.mock.calls.reduce((total, call) => total + call.arguments[0], 0), 4000);
+  assert.deepEqual(f.restoreReport().skipped.map(entry => entry.code), ['PANE_BUSY', 'PANE_BUSY']);
+  assert.equal(f.calls.some(call => call[0] === 'respawn-pane'), false);
+});
+
 for (const claims of ['{', '[]']) {
   test(`invalid shared claims (${claims}) abort before any pane launch`, async t => {
     const f = fixture(t);

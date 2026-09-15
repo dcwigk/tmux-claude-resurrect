@@ -19,9 +19,10 @@ The plugin is event driven. It does no work while a user is simply typing in tmu
 - `claude.mjs` owns native records, process ancestry, session selection, and transcript paths.
 - `snapshot.mjs` owns Resurrect row positions and the versioned manifest format.
 - `resurrect.mjs` coordinates tmux, save/restore, shared state, and diagnostics.
+- `coordination.mjs` owns restore locks and launch claims, including process identity and expiry checks.
 - `files.mjs` provides bounded reads, explicit JSON read outcomes, and atomic writes shared by the other modules.
 
-Session selection receives pane, process, and registry observations as data. It does not parse snapshots or perform I/O. Both save and doctor use the same selection path. Pane eligibility and claim expiry are also pure decisions; the restore runtime supplies process observations, time, and waits so their callers can be tested deterministically.
+Session selection receives pane, process, and registry observations as data. It does not parse snapshots or perform I/O. Both save and doctor use the same selection path. Pane eligibility and claim expiry are also pure decisions; the restore runtime supplies process observations, time, and waits so their callers can be tested deterministically. The restore loop delegates pane preparation and launching to named steps while retaining shared-state checks, the shared wait deadline, and cleanup in the coordinator.
 
 Missing JSON files, invalid content, and filesystem read failures are separate outcomes. Optional reports can be unavailable without aborting restoration; errors writing reports are emitted to stderr. Shared launch claims remain critical state: unreadable or malformed claims abort the launch pass instead of silently removing duplicate-launch protection.
 
@@ -84,10 +85,12 @@ No Claude settings, terminal colors, pane titles, or key bindings are changed. T
 
 ## Verification scope
 
-Unit tests exercise session selection, pane eligibility, and claim expiry using supplied observations. Restore failure tests simulate individual pane errors, shared-state write failures, and lock loss without starting tmux. Other unit tests cover process identity, ancestry ambiguity, internal record/schema rejection, transcript containment, metadata bounds, literal path quoting, atomic state writes, and restore-lock ownership/recovery.
+Unit tests exercise session selection, pane eligibility, and claim expiry using supplied observations. Restore failure tests simulate individual pane errors, tmux server failure, shared-state write failures, and lock loss without starting tmux. They also check that busy panes share one wait budget. Other unit tests cover process identity, ancestry ambiguity, internal record/schema rejection, transcript containment, metadata bounds, literal path quoting, atomic state writes, and restore-lock ownership/recovery.
 
 Integration tests run the pinned upstream Resurrect save/restore scripts against isolated real tmux servers. Synthetic processes publish the minimum native registry fields and record their launch arguments. Scenarios include changed pane IDs, multiple sessions in one project, repeated restore, bootstrap replacement, busy-pane protection, missing files, malformed or changed snapshots, an already-running session outside tmux, prior-hook failures, uninstall, and plugin/executable paths with quotes and spaces.
 
 A separate scenario uses real TPM to clone a temporary Git repository containing the runtime, load it through `@plugin`, reload it repeatedly, and save/restore through the installed Resurrect scripts. It uses an isolated XDG configuration and local Git URLs, exercising TPM's installation path without publishing a repository or loading the user's plugins.
+
+Two isolated tmux servers also restore the same snapshot with a shared profile and state directory. The synthetic Claude process delays registry publication until the test releases it. The second server must skip the claimed session after the first server releases its restore lock; it may resume that session once the first process exits.
 
 The tests exercise the mechanics without paid Claude calls or real conversation files. Native detection has separately been observed with Claude Code 2.1.272 on macOS. A green test suite cannot promise that a future Claude release retains this undocumented registry.

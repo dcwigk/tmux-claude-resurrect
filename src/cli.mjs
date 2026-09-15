@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import { context, install, uninstall, doctor, status, unlock, runHook } from './resurrect.mjs';
+import { context, install, uninstall, doctor, status, runHook } from './resurrect.mjs';
+import { unlock } from './coordination.mjs';
 
 const { version } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const help = `tmux-claude-resurrect ${version}

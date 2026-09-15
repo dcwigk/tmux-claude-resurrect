@@ -2,12 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { atomicJSON, directoryExists, isText, isUUID, listDirectory, readJSON } from './files.mjs';
+import { atomicJSON, directoryExists, isText, listDirectory, readJSON } from './files.mjs';
 import { processes, readNativeSessions, selectSessions, paneKey, idle,
   transcriptFor, transcriptValid, projectTranscriptPath } from './claude.mjs';
 import { readLayout, snapshotPanes, readSnapshot, writeSnapshot } from './snapshot.mjs';
+import { acquireLock, readClaims, recordLaunch } from './coordination.mjs';
 
 const RUNNER = fileURLToPath(new URL('../bin/claude-resurrect', import.meta.url));
 const PREFIX = '@claude-resurrect-';
@@ -15,15 +16,12 @@ const HOOKS = ['post-save-layout', 'pre-restore-all', 'post-restore-all'];
 const TMUX_QUERY_TIMEOUT_MS = 10000;
 const PREVIOUS_HOOK_TIMEOUT_MS = 30000;
 const PENDING_TTL_MS = 120000;
-const CLAIM_TTL_MS = 60000;
-const LOCK_RECOVERY_AGE_MS = 30000;
 const SHELL_SETTLE_MS = 4000;
 const SHELL_POLL_MS = 100;
 export const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
 const serverKey = runtime => createHash('sha256').update(runtime.server).digest('hex').slice(0, 12);
 /** @typedef {ReturnType<typeof context>} Runtime */
 /** @typedef {{ paneId: string, pid: number, start: string, idle: boolean }} PreviousPane */
-/** @typedef {{ pid: number, start: string, time: number, server: string, paneId: string }} LaunchClaim */
 
 export function context() {
   const match = process.env.TMUX?.match(/^(.*),\d+,\d+$/);
@@ -34,11 +32,13 @@ export function context() {
   const option = (name, fallback = '') => tmux('show-option', '-gqv', name) || fallback;
   const expand = value => value.replace(/^~(?=\/|$)/, os.homedir())
     .replaceAll('$HOME', os.homedir()).replaceAll('$HOSTNAME', os.hostname());
-  const claudeDir = expand(option(PREFIX + 'claude-dir', process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')));
+  const claudeDir = expand(option(PREFIX + 'claude-dir',
+    process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')));
   const legacy = path.join(os.homedir(), '.tmux/resurrect');
   const resurrectDir = expand(option('@resurrect-dir', fs.existsSync(legacy) ? legacy
     : path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'tmux/resurrect')));
-  const stateDir = expand(option(PREFIX + 'state-dir', path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local/state'), 'tmux/claude-resurrect')));
+  const stateDir = expand(option(PREFIX + 'state-dir',
+    path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local/state'), 'tmux/claude-resurrect')));
   const server = tmux('display-message', '-p', '#{pid}:#{start_time}');
   const panes = () => tmux('list-panes', '-a', '-F', [
     '#{session_name}', '#{window_index}', '#{pane_index}', '#{pane_id}', '#{pane_pid}',
@@ -54,9 +54,12 @@ export function context() {
 export function install(runtime) {
   for (const hook of HOOKS) {
     const name = '@resurrect-hook-' + hook;
-    const current = runtime.option(name), installed = runtime.option(PREFIX + 'installed-' + hook);
+    const current = runtime.option(name);
+    const installed = runtime.option(PREFIX + 'installed-' + hook);
     const command = `${quote(RUNNER)} hook ${quote(hook)}`;
-    if (current !== installed && current !== command) runtime.tmux('set-option', '-g', PREFIX + 'previous-' + hook, current);
+    if (current !== installed && current !== command) {
+      runtime.tmux('set-option', '-g', PREFIX + 'previous-' + hook, current);
+    }
     runtime.tmux('set-option', '-g', name, command);
     runtime.tmux('set-option', '-g', PREFIX + 'installed-' + hook, command);
   }
@@ -129,7 +132,8 @@ function clearOverwriteGuard(runtime) {
 export function beforeRestore(runtime) {
   runtime.tmux('set-option', '-gu', PREFIX + 'pending');
   clearOverwriteGuard(runtime);
-  const panes = runtime.panes(), table = runtime.processes();
+  const panes = runtime.panes();
+  const table = runtime.processes();
   // Protect the sole busy pane before parsing potentially damaged metadata.
   if (panes.length === 1 && !idle(panes[0], table) && !runtime.option('@resurrect-never-overwrite')) {
     runtime.tmux('set-option', '-g', '@resurrect-never-overwrite', 'claude-resurrect');
@@ -162,72 +166,15 @@ export function executable(runtime) {
   const candidates = command.includes('/') ? [command]
     : (process.env.PATH || '').split(path.delimiter).map(directory => path.join(directory, command));
   const found = candidates.find(file => {
-    try { fs.accessSync(file, fs.constants.X_OK); return fs.statSync(file).isFile(); }
-    catch { return false; }
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
   });
   if (!found) throw new Error('Claude executable not found');
   return path.resolve(found);
-}
-
-export function acquireLock(runtime) {
-  fs.mkdirSync(runtime.stateDir, { recursive: true, mode: 0o700 });
-  const file = path.join(runtime.stateDir, 'restore.lock');
-  const owner = { pid: process.pid, start: runtime.processes().get(process.pid)?.start, token: randomUUID() };
-  if (!owner.start) throw new Error('Cannot verify restore process identity');
-  let descriptor;
-  try { descriptor = fs.openSync(file, 'wx', 0o600); }
-  catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    throw new Error('Restore lock exists; use doctor, then unlock if its owner has exited');
-  }
-  try { fs.writeFileSync(descriptor, JSON.stringify(owner)); }
-  finally { fs.closeSync(descriptor); }
-  const owned = () => {
-    const result = readJSON(file);
-    return result.status === 'ok' && result.value?.token === owner.token;
-  };
-  return {
-    assertOwned() { if (!owned()) throw new Error('Restore lock ownership changed'); },
-    release() { if (owned()) fs.unlinkSync(file); },
-  };
-}
-
-export function unlock(runtime) {
-  const file = path.join(runtime.stateDir, 'restore.lock');
-  const result = readJSON(file);
-  if (result.status === 'missing') return;
-  if (result.status === 'unreadable') throw new Error(`Cannot inspect restore lock: ${result.error}`);
-  const owner = result.status === 'ok' ? result.value : null;
-  if (owner?.start && runtime.processes().get(owner.pid)?.start === owner.start) {
-    throw new Error('Restore lock owner is still running');
-  }
-  if (runtime.now() - fs.statSync(file).mtimeMs < LOCK_RECOVERY_AGE_MS) {
-    throw new Error('Restore lock is too recent; wait at least 30 seconds');
-  }
-  fs.unlinkSync(file);
-}
-
-/** @returns {Record<string, LaunchClaim>} */
-export function activeClaims(claims, table, now) {
-  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) throw new Error('Invalid launch claims');
-  const active = {};
-  for (const [id, claim] of Object.entries(claims)) {
-    if (!isUUID(id) || !claim || !Number.isFinite(claim.time) || !Number.isInteger(claim.pid) || claim.pid <= 1
-      || !isText(claim.start) || !isText(claim.server) || typeof claim.paneId !== 'string' || !/^%\d+$/.test(claim.paneId)) {
-      throw new Error('Invalid launch claim; refusing to discard duplicate-launch protection');
-    }
-    if (now - claim.time <= CLAIM_TTL_MS && table.get(claim.pid)?.start === claim.start) {
-      active[id] = claim;
-    }
-  }
-  return active;
-}
-
-function readClaims(runtime) {
-  const result = readJSON(path.join(runtime.stateDir, 'launches.json'));
-  if (result.status === 'missing') return {};
-  if (result.status !== 'ok') throw new Error(`Cannot read launch claims (${result.status}): ${result.error}`);
-  return activeClaims(result.value, runtime.processes(), runtime.now());
 }
 
 function validatePending(pending, saved, runtime) {
@@ -243,6 +190,55 @@ function validatePending(pending, saved, runtime) {
   }
 }
 
+async function preparePane(runtime, entry, pending, deadline) {
+  let pane = runtime.panes().find(pane => paneKey(pane) === paneKey(entry));
+  const original = pending.panes.find(previous => previous.paneId === pane?.paneId);
+  let reason = paneSkipReason(pane, original, runtime.processes());
+  if (reason && reason.code !== 'PANE_BUSY') return { skipped: reason };
+
+  try {
+    const available = directoryExists(entry.cwd)
+      && (transcriptValid(runtime.claudeDir, entry.transcript, entry.id)
+        || transcriptFor(runtime.claudeDir, entry.id, entry.cwd));
+    if (!available) {
+      return { skipped: { code: 'FILES_MISSING', reason: 'Missing directory or transcript' } };
+    }
+  } catch (error) {
+    return { failed: { code: 'FILES_UNREADABLE', reason: error.message } };
+  }
+
+  while (reason?.code === 'PANE_BUSY' && runtime.now() < deadline) {
+    await runtime.sleep(SHELL_POLL_MS);
+    pane = runtime.panes().find(pane => paneKey(pane) === paneKey(entry));
+    reason = paneSkipReason(pane, original, runtime.processes());
+  }
+  return reason ? { skipped: reason } : { pane, original };
+}
+
+function launchPane(runtime, entry, pane, { command, shell, claims }, result) {
+  const target = { target: paneKey(entry), id: entry.id };
+  // Keep the wrapper alive on Ctrl-C so it can open a login shell after Claude exits.
+  const wrapper = `trap ':' INT; ${quote(command)} --resume ${quote(entry.id)}; exec ${quote(shell)} -l`;
+  try {
+    runtime.tmux('respawn-pane', '-k', '-t', pane.paneId, '-c', entry.cwd,
+      '-e', `CLAUDE_CONFIG_DIR=${runtime.claudeDir}`, '/bin/sh', '-c', wrapper);
+  } catch (error) {
+    // Continue after a pane failure only if the tmux server is still reachable.
+    runtime.tmux('display-message', '-p', '#{pid}');
+    result.failed.push({ ...target, code: 'LAUNCH_FAILED', reason: error.message });
+    return;
+  }
+
+  result.launched.push(target);
+  const startedPane = runtime.panes().find(candidate => candidate.paneId === pane.paneId);
+  recordLaunch(runtime, claims, entry.id, startedPane);
+  try {
+    runtime.tmux('set-option', '-p', '-t', pane.paneId, PREFIX + 'session', entry.id);
+  } catch (error) {
+    result.failed.push({ ...target, code: 'PANE_ANNOTATION_FAILED', reason: error.message });
+  }
+}
+
 export async function afterRestore(runtime) {
   const rawPending = runtime.option(PREFIX + 'pending', 'null');
   runtime.tmux('set-option', '-gu', PREFIX + 'pending');
@@ -254,64 +250,40 @@ export async function afterRestore(runtime) {
   const lock = acquireLock(runtime);
   const result = { snapshot: saved.file, launched: [], skipped: [], failed: [] };
   try {
-    const command = executable(runtime);
-    const shell = runtime.option('default-shell', '/bin/sh');
-    const claims = readClaims(runtime);
+    const launch = {
+      command: executable(runtime), shell: runtime.option('default-shell', '/bin/sh'), claims: readClaims(runtime),
+    };
     const deadline = runtime.now() + SHELL_SETTLE_MS;
     for (const entry of saved.manifest.entries) {
       const target = { target: paneKey(entry), id: entry.id };
-      let pane = runtime.panes().find(pane => paneKey(pane) === paneKey(entry));
-      const original = pending.panes.find(previous => previous.paneId === pane?.paneId);
-      let reason = paneSkipReason(pane, original, runtime.processes());
-      if (reason && reason.code !== 'PANE_BUSY') { result.skipped.push({ ...target, ...reason }); continue; }
-      try {
-        if (!directoryExists(entry.cwd) || !transcriptValid(runtime.claudeDir, entry.transcript, entry.id)
-          && !transcriptFor(runtime.claudeDir, entry.id, entry.cwd)) {
-          result.skipped.push({ ...target, code: 'FILES_MISSING', reason: 'Missing directory or transcript' });
-          continue;
-        }
-      } catch (error) {
-        result.failed.push({ ...target, code: 'FILES_UNREADABLE', reason: error.message });
+      const prepared = await preparePane(runtime, entry, pending, deadline);
+      if (prepared.skipped) {
+        result.skipped.push({ ...target, ...prepared.skipped });
         continue;
       }
-      while (reason?.code === 'PANE_BUSY' && runtime.now() < deadline) {
-        await runtime.sleep(SHELL_POLL_MS);
-        pane = runtime.panes().find(pane => paneKey(pane) === paneKey(entry));
-        reason = paneSkipReason(pane, original, runtime.processes());
+      if (prepared.failed) {
+        result.failed.push({ ...target, ...prepared.failed });
+        continue;
       }
-      if (reason) { result.skipped.push({ ...target, ...reason }); continue; }
+
       // Registry and shared-state failures abort the whole pass; pane failures do not.
       const registry = readNativeSessions(runtime.claudeDir, runtime.processes());
-      if (claims[entry.id] || registry.sessions.some(session => session.sessionId === entry.id)) {
+      if (launch.claims[entry.id] || registry.sessions.some(session => session.sessionId === entry.id)) {
         result.skipped.push({ ...target, code: 'SESSION_ACTIVE', reason: 'Session is already running or starting' });
         continue;
       }
       lock.assertOwned();
+      const { pane, original } = prepared;
       const fresh = runtime.panes().find(candidate => candidate.paneId === pane.paneId);
       if (!fresh || fresh.pid !== pane.pid || paneSkipReason(fresh, original, runtime.processes())) {
         result.skipped.push({ ...target, code: 'PANE_CHANGED', reason: 'Pane changed' });
         continue;
       }
-      const wrapper = `trap ':' INT; ${quote(command)} --resume ${quote(entry.id)}; exec ${quote(shell)} -l`;
-      try {
-        runtime.tmux('respawn-pane', '-k', '-t', pane.paneId, '-c', entry.cwd,
-          '-e', `CLAUDE_CONFIG_DIR=${runtime.claudeDir}`, '/bin/sh', '-c', wrapper);
-      } catch (error) {
-        runtime.tmux('display-message', '-p', '#{pid}');
-        result.failed.push({ ...target, code: 'LAUNCH_FAILED', reason: error.message });
-        continue;
-      }
-      result.launched.push(target);
-      const startedPane = runtime.panes().find(candidate => candidate.paneId === pane.paneId);
-      const start = runtime.processes().get(startedPane?.pid)?.start;
-      if (!start) throw new Error('Cannot verify launched pane identity');
-      claims[entry.id] = { time: runtime.now(), server: runtime.server, paneId: pane.paneId, pid: startedPane.pid, start };
-      atomicJSON(path.join(runtime.stateDir, 'launches.json'), claims);
-      try { runtime.tmux('set-option', '-p', '-t', pane.paneId, PREFIX + 'session', entry.id); }
-      catch (error) { result.failed.push({ ...target, code: 'PANE_ANNOTATION_FAILED', reason: error.message }); }
+      launchPane(runtime, entry, pane, launch, result);
     }
     if (result.launched.length || result.skipped.length || result.failed.length) {
-      runtime.tmux('display-message', `Claude: ${result.launched.length} launched, ${result.skipped.length} skipped, ${result.failed.length} failed`);
+      runtime.tmux('display-message',
+        `Claude: ${result.launched.length} launched, ${result.skipped.length} skipped, ${result.failed.length} failed`);
     }
   } catch (error) {
     result.error = error.message;
@@ -329,34 +301,55 @@ export function status(runtime) {
     for (const name of listDirectory(runtime.stateDir).filter(name => name.startsWith(prefix)
       && /-(save|restore|error|previous-hook-error)\.json$/.test(name)).sort()) {
       const record = readJSON(path.join(runtime.stateDir, name));
-      if (record.status === 'ok' && record.value && typeof record.value.action === 'string') result.reports.push(record.value);
-      else if (record.status === 'ok') result.warnings.push(`${name}: invalid report schema`);
-      else if (record.status !== 'missing') result.warnings.push(`${name} (${record.status}): ${record.error}`);
+      if (record.status === 'ok' && record.value && typeof record.value.action === 'string') {
+        result.reports.push(record.value);
+      } else if (record.status === 'ok') {
+        result.warnings.push(`${name}: invalid report schema`);
+      } else if (record.status !== 'missing') {
+        result.warnings.push(`${name} (${record.status}): ${record.error}`);
+      }
     }
-  } catch (error) { result.warnings.push(`Cannot read reports: ${error.message}`); }
+  } catch (error) {
+    result.warnings.push(`Cannot read reports: ${error.message}`);
+  }
   try {
     const saved = readSnapshot(runtime.resurrectDir);
     result.snapshot = saved.file;
     result.entries = saved.manifest.entries;
-  } catch (error) { result.snapshotError = error.message; }
+  } catch (error) {
+    result.snapshotError = error.message;
+  }
   return result;
 }
 
 export function doctor(runtime) {
   const warnings = [];
-  let command, captured = null;
-  try { command = executable(runtime); } catch (error) { warnings.push(error.message); }
+  let command;
+  let captured = null;
+  try {
+    command = executable(runtime);
+  } catch (error) {
+    warnings.push(error.message);
+  }
   try {
     captured = capture(runtime, runtime.panes());
     warnings.push(...captured.warnings.map(warning => `${warning.reason}: ${warning.file}`));
-  } catch (error) { warnings.push(`Session detection failed: ${error.message}`); }
+  } catch (error) {
+    warnings.push(`Session detection failed: ${error.message}`);
+  }
   const installed = HOOKS.every(hook => runtime.option('@resurrect-hook-' + hook)
     && runtime.option('@resurrect-hook-' + hook) === runtime.option(PREFIX + 'installed-' + hook));
   if (!installed) warnings.push('Plugin is not installed on this tmux server');
-  if (/\s/.test(runtime.resurrectDir)) warnings.push('Upstream tmux-resurrect does not reliably support whitespace in its snapshot directory');
+  if (/\s/.test(runtime.resurrectDir)) {
+    warnings.push('Upstream tmux-resurrect does not reliably support whitespace in its snapshot directory');
+  }
   const lock = readJSON(path.join(runtime.stateDir, 'restore.lock'));
   if (lock.status !== 'missing') warnings.push(`Restore lock exists (${lock.status}); inspect before using unlock`);
-  try { readClaims(runtime); } catch (error) { warnings.push(error.message); }
+  try {
+    readClaims(runtime);
+  } catch (error) {
+    warnings.push(error.message);
+  }
   return { node: process.versions.node, tmux: runtime.tmux('-V'), command,
     claudeDir: runtime.claudeDir, stateDir: runtime.stateDir, resurrectDir: runtime.resurrectDir, installed,
     liveNativeSessions: captured?.liveNativeSessions ?? null, captured: captured?.entries.length ?? null,
@@ -371,7 +364,9 @@ export async function runHook(runtime, hook, args) {
     try {
       execFileSync('/bin/bash', ['-c', previous + (args.length ? ' ' + args.map(quote).join(' ') : '')],
         { stdio: 'ignore', timeout: PREVIOUS_HOOK_TIMEOUT_MS });
-    } catch (error) { report(runtime, 'previous-hook-error', { hook, error: error.message }); }
+    } catch (error) {
+      report(runtime, 'previous-hook-error', { hook, error: error.message });
+    }
   }
   try {
     if (hook === 'post-save-layout') save(runtime, args[0]);
@@ -379,7 +374,10 @@ export async function runHook(runtime, hook, args) {
     else await afterRestore(runtime);
   } catch (error) {
     report(runtime, 'error', { hook, error: error.message });
-    try { runtime.tmux('display-message', 'Claude restore: skipped; run bin/claude-resurrect status for details'); }
-    catch { console.error(`Claude restore: ${error.message}`); }
+    try {
+      runtime.tmux('display-message', 'Claude restore: skipped; run bin/claude-resurrect status for details');
+    } catch {
+      console.error(`Claude restore: ${error.message}`);
+    }
   }
 }

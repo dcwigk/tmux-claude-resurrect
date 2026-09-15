@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { parseProcesses, distance, readNativeSessions, selectSessions, transcriptValid, transcriptFor, idle, processes } from '../src/claude.mjs';
 import { decodeManifest, readSnapshot } from '../src/snapshot.mjs';
 import { atomicJSON, readJSON } from '../src/files.mjs';
-import { quote, acquireLock, unlock, paneSkipReason, activeClaims } from '../src/resurrect.mjs';
+import { quote, paneSkipReason } from '../src/resurrect.mjs';
+import { acquireLock, unlock, activeClaims } from '../src/coordination.mjs';
 
 const IDS = [1, 2].map(n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`);
 const START = 'Mon Sep 14 06:25:00 2026';

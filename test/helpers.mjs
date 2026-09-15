@@ -15,6 +15,7 @@ export const waitFor = async predicate => {
 export const events = root => { try { return fs.readFileSync(path.join(root, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse); } catch { return []; } };
 
 export function fixture({ install = true } = {}) {
+  // Keep tmux socket paths below Unix limits even when the system temp path is long.
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/claude-resurrect-test-'));
   const socket = path.join(root, 'tmux.sock');
   const claudeDir = path.join(root, 'claude');
@@ -31,7 +32,15 @@ import { execFileSync } from 'node:child_process';
 const root = ${JSON.stringify(root)};
 const id = process.argv[3];
 const start = execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } }).trim().replace(/\\s+/g, ' ');
-fs.writeFileSync(path.join(root, 'claude/sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, procStart: start, sessionId: id, cwd: process.cwd(), kind: 'interactive', entrypoint: 'cli' }));
+const publish = () => fs.writeFileSync(path.join(root, 'claude/sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, procStart: start, sessionId: id, cwd: process.cwd(), kind: 'interactive', entrypoint: 'cli' }));
+const gate = path.join(root, 'hold-registry');
+if (fs.existsSync(gate)) {
+  const timer = setInterval(() => {
+    if (fs.existsSync(gate)) return;
+    publish();
+    clearInterval(timer);
+  }, 25);
+} else publish();
 fs.appendFileSync(path.join(root, 'events.jsonl'), JSON.stringify({ args: process.argv.slice(2), id, cwd: process.cwd(), pane: process.env.TMUX_PANE, pid: process.pid, start }) + '\\n');
 setInterval(() => {}, 1000);
 `, { mode: 0o700 });

@@ -91,15 +91,22 @@ export function selectSessions(panes, table, registry) {
     const sessions = candidates.filter(candidate => candidate.depth === nearest).map(candidate => candidate.record);
     const skip = (code, reason) => skipped.push({ target: paneKey(pane), code, reason });
     if (!sessions.length) {
+      // Native Claude binaries can use version filenames; this only flags missing metadata.
       if ([...table.values()].some(process => /^(claude|\d+\.\d+\.\d+)$/.test(process.command)
         && Number.isFinite(distance(process.pid, pane.pid, table)))) {
         skip('NO_NATIVE_SESSION', 'No compatible live native session record');
       }
       continue;
     }
-    if (sessions.length !== 1) { skip('AMBIGUOUS_SESSION', 'Ambiguous sessions'); continue; }
+    if (sessions.length !== 1) {
+      skip('AMBIGUOUS_SESSION', 'Ambiguous sessions');
+      continue;
+    }
     const { sessionId: id, cwd } = sessions[0];
-    if (!isText(cwd) || !path.isAbsolute(cwd)) { skip('INVALID_CWD', 'Invalid working directory'); continue; }
+    if (!isText(cwd) || !path.isAbsolute(cwd)) {
+      skip('INVALID_CWD', 'Invalid working directory');
+      continue;
+    }
     entries.push({ session: pane.session, window: pane.window, pane: pane.pane, id, cwd });
   }
   const counts = new Map();
