@@ -4,11 +4,16 @@ The GIF records real Claude Code conversations in a 144 × 42 terminal, using tm
 
 The scenario opens tmux, starts Claude in both panes, saves, detaches, stops only its own server, opens a fresh server, and restores through the installed Resurrect hooks. Assertions compare session IDs, pane addresses, working directories, transcript paths, and launch arguments before and after restoration. Both original prompts must also reappear in their panes.
 
+| Pane | Launch command |
+| --- | --- |
+| Left | `claude --model sonnet --effort low` |
+| Right | `claude --model opus --dangerously-skip-permissions` |
+
 ## Record
 
 Use the plugin's development requirements, an authenticated Claude Code installation, [asciinema 2.4](https://docs.asciinema.org/manual/cli/usage/) (or `uv` to run it temporarily), and [agg 1.9](https://docs.asciinema.org/manual/agg/). This recording was made with Claude Code 2.1.272. The rendering command uses JetBrainsMono Nerd Font Mono; choose another monospace font if needed.
 
-This is an optional live demonstration, separate from the automated test suite. Each run sends two short prompts through your existing Claude authentication and uses your subscription or API allowance. Safe mode disables personal customizations, and `--tools ''` disables tools. The recorder does not read or copy credentials. Review the cast before publishing it: Claude's UI can vary by version and account.
+This is an optional live demonstration, separate from the automated test suite. Each run sends two short prompts through your existing Claude authentication and uses your subscription or API allowance. Safe mode disables personal customizations; the right pane explicitly enables permission bypass. The prompts ask for brief explanations in an empty temporary project. The recorder does not copy credential files. Review the cast before publishing it: Claude's UI can vary by version and account.
 
 ```sh
 npm run test:deps

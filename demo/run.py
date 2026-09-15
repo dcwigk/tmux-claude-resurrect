@@ -15,7 +15,10 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[1]
 RESURRECT = REPO / '.test-deps/tmux-resurrect'
 COLS, ROWS = 144, 42
-OPTIONS = ['--model', 'sonnet', '--effort', 'low', '--tools', '']
+OPTIONS = [
+    ['--model', 'sonnet', '--effort', 'low'],
+    ['--model', 'opus', '--dangerously-skip-permissions'],
+]
 PROMPTS = [
     'Give me two benefits of cursor pagination. Keep it brief.',
     'Give me two checks for secure session cookies. Keep it brief.',
@@ -188,7 +191,7 @@ class Demo:
     def prepare(self):
         # Accept trust only for the empty project this recorder just created.
         self.start()
-        self.tmux('respawn-pane', '-k', '-t', 'atlas:0.0', '-c', self.project, self.claude, *OPTIONS)
+        self.tmux('respawn-pane', '-k', '-t', 'atlas:0.0', '-c', self.project, self.claude, *OPTIONS[0])
         wait_for(lambda: 'Yes, I trust this folder' in self.screen(0) or 'Claude Code v' in self.screen(0))
         if 'Yes, I trust this folder' in self.screen(0):
             time.sleep(1)
@@ -222,8 +225,8 @@ class Demo:
         time.sleep(1.2)
         self.tmux('split-window', '-h', '-d', '-t', 'atlas:0', '-c', self.project, '/bin/sh')
         time.sleep(0.7)
-        for index in range(2):
-            self.type(index, shlex.join(['claude', *OPTIONS]))
+        for index, options in enumerate(OPTIONS):
+            self.type(index, shlex.join(['claude', *options]))
         speed(3)
         wait_for(lambda: all('Claude Code v' in self.screen(i) and '❯' in self.screen(i) for i in range(2)))
         speed(1)
@@ -235,7 +238,7 @@ class Demo:
         time.sleep(3)
         before = self.capture()
         assert len(before['entries']) == 2 and not before['unavailable'] and not before['skipped'], before
-        assert all(entry['args'] == OPTIONS for entry in before['entries'])
+        assert [entry['args'] for entry in before['entries']] == OPTIONS
         self.phase('SAVE', 'prefix + Ctrl-s  ·  Save the layout, exact session IDs, and launch options.')
         self.action('save')
         snapshot = (self.root / 'snapshots/last').read_text()
