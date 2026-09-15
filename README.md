@@ -2,6 +2,10 @@
 
 Resume the **exact Claude Code conversation in each restored tmux pane**.
 
+![Two Claude conversations in the same project are saved, survive a tmux server restart, and return to their original panes with their launch options.](docs/assets/restore.gif)
+
+Real tmux save/restore with synthetic Claude conversations. [Reproduce the demo](demo/README.md).
+
 The plugin reads Claude Code's native session registry, verifies each session against a running process, and saves the mapping and supported launch arguments alongside the tmux-resurrect layout. On restore, it launches `claude --resume <session-id>` with those arguments in the corresponding pane and working directory.
 
 **No Claude hooks, custom logs, background watcher, or npm dependencies.** Node.js is required to run the plugin.
