@@ -48,8 +48,8 @@ setInterval(() => {}, 1000);
 `, { mode: 0o700 });
   const tmux = (...args) => execFileSync('tmux', ['-S', socket, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
   let env;
-  const start = (name = 'work') => {
-    execFileSync('tmux', ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', name, '-x', '200', '-y', '80', '/bin/sh'], { env: { ...process.env, TMUX: '', XDG_CONFIG_HOME: path.join(root, 'config') } });
+  const start = (name = 'work', config = '/dev/null') => {
+    execFileSync('tmux', ['-S', socket, '-f', config, 'new-session', '-d', '-s', name, '-x', '200', '-y', '80', '/bin/sh'], { env: { ...process.env, TMUX: '', XDG_CONFIG_HOME: path.join(root, 'config') } });
     env = { ...process.env, TMUX: tmux('display-message', '-p', '#{socket_path},#{pid},0'), TERM: 'xterm-256color' };
     for (const [name, value] of Object.entries({
       'default-shell': '/bin/sh', '@resurrect-dir': path.join(root, 'snapshots'),

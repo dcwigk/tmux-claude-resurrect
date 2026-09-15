@@ -328,6 +328,52 @@ test('TPM clones, loads, and reloads the plugin before saving and restoring exac
   assert.equal(events(f.root).length, 2);
 });
 
+test('TPM installs hooks during a cold server start and restores after another cold start', async t => {
+  const f = fixture({ install: false });
+  t.after(f.clean);
+  const plugins = path.join(f.root, 'plugins');
+  const config = path.join(f.root, 'config/tmux/tmux.conf');
+  const environment = path.join(f.root, 'startup-environment');
+  const loader = path.join(f.root, 'load-tpm.sh');
+  const tpm = fileURLToPath(new URL('../.test-deps/tpm/tpm', import.meta.url));
+  fs.mkdirSync(plugins);
+  fs.mkdirSync(path.dirname(config), { recursive: true });
+  fs.symlinkSync(fileURLToPath(new URL('../.test-deps/tmux-resurrect', import.meta.url)),
+    path.join(plugins, 'tmux-resurrect'));
+  fs.symlinkSync(fileURLToPath(new URL('..', import.meta.url)), path.join(plugins, 'tmux-claude-resurrect'));
+  fs.writeFileSync(loader, `#!/bin/sh\nprintf '%s\\n' "$TMUX" > ${quote(environment)}\nexec ${quote(tpm)}\n`,
+    { mode: 0o700 });
+  fs.writeFileSync(config, [
+    `set-environment -g TMUX_PLUGIN_MANAGER_PATH ${quote(plugins + '/')}`,
+    `set -g @claude-resurrect-node ${quote(process.execPath)}`,
+    `set -g @claude-resurrect-claude-dir ${quote(f.claudeDir)}`,
+    "set -g @plugin 'tmux-plugins/tmux-resurrect'",
+    "set -g @plugin 'dcwigk/tmux-claude-resurrect'",
+    `run-shell ${quote(loader)}`,
+  ].join('\n') + '\n');
+
+  const coldStart = () => {
+    f.start('work', config);
+    assert.match(fs.readFileSync(environment, 'utf8').trim(), /,\d+,-1$/,
+      'TPM must run before the first session exists');
+    const diagnostic = JSON.parse(f.plugin('doctor'));
+    assert.equal(diagnostic.installed, true);
+    assert.deepEqual(diagnostic.warnings, []);
+  };
+  coldStart();
+  const args = ['--dangerously-skip-permissions'];
+  f.run('work:0.0', IDS[0], args);
+  await waitFor(() => events(f.root).length === 1);
+  f.save();
+  assert.deepEqual(decodeManifest(fs.readFileSync(f.last(), 'utf8')).entries.map(entry => entry.id), [IDS[0]]);
+  f.stop();
+  coldStart();
+  f.restore();
+  await waitFor(() => events(f.root).length === 2);
+  assert.deepEqual(events(f.root)[1].args, ['--resume', IDS[0], ...args]);
+  assert.equal(events(f.root)[1].pane, f.pane('work:0.0'));
+});
+
 test('a missing transcript is reported at save time and retained for later recovery', async t => {
   const f = await savedFixture(t);
   fs.unlinkSync(path.join(f.project, IDS[0] + '.jsonl'));

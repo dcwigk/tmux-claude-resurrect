@@ -25,7 +25,8 @@ const serverKey = runtime => createHash('sha256').update(runtime.server).digest(
 /** @typedef {{ paneId: string, pid: number, start: string, idle: boolean }} PreviousPane */
 
 export function context() {
-  const match = process.env.TMUX?.match(/^(.*),\d+,\d+$/);
+  // Startup run-shell commands have session ID -1 before the first session exists.
+  const match = process.env.TMUX?.match(/^(.*),\d+,(?:-1|\d+)$/);
   if (!match) throw new Error('Run inside tmux or from a tmux hook');
   const tmux = (...args) => execFileSync('tmux', ['-S', match[1], ...args.map(String)], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024, timeout: TMUX_QUERY_TIMEOUT_MS,

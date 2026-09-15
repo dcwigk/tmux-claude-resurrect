@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 — 2026-09-16
+
+- Install Resurrect hooks during the first tmux server start, when startup commands receive session ID `-1` before a session exists.
+- Cover cold starts through TPM with a regression test that saves and restores a session and its launch arguments across a complete server restart.
+
+Update the plugin through TPM. For an already running server, `bin/claude-resurrect install` also installs the hooks immediately. Check `doctor` and save again while Claude is running; snapshots saved without the hooks contain no Claude metadata.
+
 ## 0.2.1 — 2026-09-15
 
 - Fix Linux session detection by comparing native `procStart` clock ticks with field 22 of `/proc/<pid>/stat`; keep macOS `ps` start-time matching.
