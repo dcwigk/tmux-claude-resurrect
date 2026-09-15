@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-15
 
-- Preserve Claude's default settings location on restore; only export `CLAUDE_CONFIG_DIR` for an explicitly configured profile.
 - Capture supported launch arguments per Claude session, including explicit permission flags, models, tool restrictions, and inline settings.
 - Read exact argument boundaries from Linux `/proc` or macOS `KERN_PROCARGS2`; macOS now requires Python 3.
 - Save version-2 manifests, retain version-1 compatibility, and skip sessions whose arguments cannot be captured reliably.
 - Omit initial prompts, old session selectors, and worktree creation when resuming the saved conversation.
+- Preserve Claude's default settings location on restore; only export `CLAUDE_CONFIG_DIR` for an explicitly configured profile.
+- Add a reproducible demo with real Claude conversations, different models and permission flags, and a complete tmux server restart.
+
+When upgrading, make Python 3 available in the tmux server's `PATH` on macOS and save again to capture launch arguments. Existing version-1 snapshots still restore without arguments; version 0.1.0 cannot read new version-2 snapshots.
 
 ## 0.1.0 — 2026-09-15
 

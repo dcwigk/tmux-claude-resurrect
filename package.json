@@ -1,6 +1,6 @@
 {
   "name": "tmux-claude-resurrect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Resume exact Claude Code sessions after tmux-resurrect, using native session metadata.",
   "type": "module",
