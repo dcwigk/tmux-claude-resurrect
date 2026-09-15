@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install test tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux shellcheck procps
+      - name: Install test tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux shellcheck
+      - run: npm run test:deps
+      - run: npm run lint
+      - run: npm test
